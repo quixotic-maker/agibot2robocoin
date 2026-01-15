@@ -237,11 +237,17 @@ def process_single_task(
         
         task_name = get_task_instruction(str(task_json))
         repo_id = f"agibotworld/task_{task_id}"
+        dataset_path = Path(tgt_path) / repo_id
+        
+        # 如果目录已存在，删除后重建（处理之前失败的情况）
+        if dataset_path.exists():
+            print(f"[Task {task_id}] Removing existing incomplete dataset at {dataset_path}")
+            shutil.rmtree(dataset_path)
         
         # 创建dataset
         dataset = AgiBotDataset.create(
             repo_id=repo_id,
-            root=f"{tgt_path}/{repo_id}",
+            root=str(dataset_path),
             fps=30,
             robot_type="a2d",
             features=FEATURES,
