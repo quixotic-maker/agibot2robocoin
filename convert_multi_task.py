@@ -239,10 +239,9 @@ def process_single_task(
         repo_id = f"agibotworld/task_{task_id}"
         dataset_path = Path(tgt_path) / repo_id
         
-        # 如果目录已存在，删除后重建（处理之前失败的情况）
+        # 如果目录已存在，说明可能正在被处理或已完成，不能删除
         if dataset_path.exists():
-            print(f"[Task {task_id}] Removing existing incomplete dataset at {dataset_path}")
-            shutil.rmtree(dataset_path)
+            raise FileExistsError(f"Dataset directory already exists (may be processing by another node): {dataset_path}")
         
         # 创建dataset
         dataset = AgiBotDataset.create(
