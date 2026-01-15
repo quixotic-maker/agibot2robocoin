@@ -239,9 +239,23 @@ def process_single_task(
         repo_id = f"agibotworld/task_{task_id}"
         dataset_path = Path(tgt_path) / repo_id
         
-        # 如果目录已存在，说明可能正在被处理或已完成，不能删除
+        # 如果目录已存在，说明可能：
+        # 1. 正在被其他进程处理（不应该发生，因为有锁）
+        # 2. 已完成（不应该发生，因为checkpoint检查会跳过）
+        # 3. 之前失败/中断留下的（需要手动清理）
+        # 安全起见，直接跳过让用户手动处理
         if dataset_path.exists():
-            raise FileExistsError(f"Dataset directory already exists (may be processing by another node): {dataset_path}")
+            lock_manager.save_task_checkpoint(
+                task_id,
+                status='skipped',
+                reason='directory_already_exists',
+                pid=os.getpid()
+            )
+            return {
+                'task_id': task_id,
+                'status': 'skipped',
+                'reason': 'directory_already_exists'
+            }
         
         # 创建dataset
         dataset = AgiBotDataset.create(
