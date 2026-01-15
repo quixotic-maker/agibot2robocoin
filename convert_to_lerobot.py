@@ -25,14 +25,27 @@ from PIL import Image
 from tqdm import tqdm
 from pprint import pformat
 from tqdm.contrib.concurrent import process_map
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.utils import (
-    STATS_PATH,
-    check_timestamps_sync,
-    get_episode_data_index,
-    serialize_dict,
-    write_json,
-)
+
+# 兼容不同版本的lerobot
+try:
+    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.common.datasets.utils import (
+        STATS_PATH,
+        check_timestamps_sync,
+        get_episode_data_index,
+        serialize_dict,
+        write_json,
+    )
+except ImportError:
+    # 兼容新版本的lerobot
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.datasets.utils import (
+        STATS_PATH,
+        check_timestamps_sync,
+        get_episode_data_index,
+        serialize_dict,
+        write_json,
+    )
 
 HEAD_COLOR = "head_color.mp4"
 HAND_LEFT_COLOR = "hand_left_color.mp4"
