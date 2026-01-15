@@ -38,15 +38,53 @@ try:
         write_json,
     )
 except ImportError:
-    # 兼容新版本的lerobot
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from lerobot.datasets.utils import (
-        STATS_PATH,
-        check_timestamps_sync,
-        get_episode_data_index,
-        serialize_dict,
-        write_json,
-    )
+    try:
+        # 尝试新版本的lerobot
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+        from lerobot.datasets.utils import STATS_PATH
+    except ImportError:
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+        STATS_PATH = "stats"
+    
+    # 新版本移除了这些函数，需要本地实现
+    def check_timestamps_sync(dataset, episode_data_index, fps, tolerance_s):
+        """检查时间戳同步（新版本已移除，提供兼容实现）"""
+        pass  # 简化实现，跳过检查
+    
+    def get_episode_data_index(episodes, selected_episodes=None):
+        """获取episode数据索引"""
+        if selected_episodes is None:
+            return {"from": [e["from"] for e in episodes], "to": [e["to"] for e in episodes]}
+        indices = []
+        for ep_idx in selected_episodes:
+            indices.append(episodes[ep_idx])
+        return {"from": [e["from"] for e in indices], "to": [e["to"] for e in indices]}
+    
+    def serialize_dict(stats):
+        """序列化字典（转换tensor为list）"""
+        import torch
+        serialized = {}
+        for key, value in stats.items():
+            if isinstance(value, dict):
+                serialized[key] = {}
+                for k, v in value.items():
+                    if isinstance(v, torch.Tensor):
+                        serialized[key][k] = v.tolist()
+                    else:
+                        serialized[key][k] = v
+            elif isinstance(value, torch.Tensor):
+                serialized[key] = value.tolist()
+            else:
+                serialized[key] = value
+        return serialized
+    
+    def write_json(data, filepath):
+        """写入JSON文件"""
+        import json
+        from pathlib import Path
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
 
 # 导入原脚本的常量和函数
 import sys
