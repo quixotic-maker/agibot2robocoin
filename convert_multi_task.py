@@ -263,6 +263,7 @@ def process_single_task(
             partial(load_local_dataset, src_path=src_path, task_id=int(task_id)),
             all_episode_ids,
             max_workers=num_workers_per_task,
+            chunksize=max(1, len(all_episode_ids) // (num_workers_per_task * 4)),
             desc=f"Task {task_id} - Loading episodes",
         )
         
