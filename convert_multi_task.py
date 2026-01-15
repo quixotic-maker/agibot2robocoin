@@ -18,6 +18,7 @@ from functools import partial
 from math import ceil
 from copy import deepcopy
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import h5py
 import torch
@@ -257,15 +258,25 @@ def process_single_task(
         if not all_episode_ids:
             raise ValueError(f"No episodes found for task {task_id}")
         
-        # 并行加载所有episodes的数据
+        # 使用线程池并行加载episodes（避免进程嵌套问题）
         print(f"[Task {task_id}] Loading {len(all_episode_ids)} episodes...")
-        raw_datasets = process_map(
-            partial(load_local_dataset, src_path=src_path, task_id=int(task_id)),
-            all_episode_ids,
-            max_workers=num_workers_per_task,
-            chunksize=max(1, len(all_episode_ids) // (num_workers_per_task * 4)),
-            desc=f"Task {task_id} - Loading episodes",
-        )
+        raw_datasets = []
+        with ThreadPoolExecutor(max_workers=num_workers_per_task) as executor:
+            futures = {
+                executor.submit(load_local_dataset, ep_id, src_path, int(task_id)): ep_id 
+                for ep_id in all_episode_ids
+            }
+            
+            with tqdm(total=len(all_episode_ids), desc=f"Task {task_id} - Loading episodes") as pbar:
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        raw_datasets.append(result)
+                    except Exception as e:
+                        ep_id = futures[future]
+                        print(f"[Task {task_id}] Episode {ep_id} failed: {e}")
+                        raw_datasets.append(None)
+                    pbar.update(1)
         
         # 过滤掉None
         valid_datasets = [d for d in raw_datasets if d is not None]
