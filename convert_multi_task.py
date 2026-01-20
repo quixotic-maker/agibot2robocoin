@@ -277,36 +277,35 @@ def process_single_task(
         if not all_episode_ids:
             raise ValueError(f"No episodes found for task {task_id}")
         
-        # 使用线程池并行加载episodes（避免进程嵌套问题）
-        print(f"[Task {task_id}] Loading {len(all_episode_ids)} episodes...")
-        raw_datasets = []
+        # 使用线程池并行加载episodes，边加载边保存（避免内存累积）
+        print(f"[Task {task_id}] Processing {len(all_episode_ids)} episodes...")
+        processed_count = 0
+        failed_count = 0
+        
         with ThreadPoolExecutor(max_workers=num_workers_per_task) as executor:
             futures = {
                 executor.submit(load_local_dataset, ep_id, src_path, int(task_id)): ep_id 
                 for ep_id in all_episode_ids
             }
             
-            with tqdm(total=len(all_episode_ids), desc=f"Task {task_id} - Loading episodes") as pbar:
+            with tqdm(total=len(all_episode_ids), desc=f"Task {task_id} - Processing episodes") as pbar:
                 for future in as_completed(futures):
+                    ep_id = futures[future]
                     try:
                         result = future.result()
-                        raw_datasets.append(result)
+                        if result is not None:
+                            # 立即保存，释放内存
+                            frames, videos = result
+                            for frame in frames:
+                                dataset.add_frame(frame)
+                            dataset.save_episode(task=task_name, videos=videos)
+                            processed_count += 1
+                            # 主动释放内存
+                            del result, frames, videos
                     except Exception as e:
-                        ep_id = futures[future]
                         print(f"[Task {task_id}] Episode {ep_id} failed: {e}")
-                        raw_datasets.append(None)
+                        failed_count += 1
                     pbar.update(1)
-        
-        # 过滤掉None
-        valid_datasets = [d for d in raw_datasets if d is not None]
-        
-        # 保存episodes到dataset
-        print(f"[Task {task_id}] Saving {len(valid_datasets)} episodes to LeRobot format...")
-        for raw_dataset in tqdm(valid_datasets, desc=f"Task {task_id} - Saving episodes"):
-            frames, videos = raw_dataset
-            for frame in frames:
-                dataset.add_frame(frame)
-            dataset.save_episode(task=task_name, videos=videos)
         
         # Consolidate dataset
         print(f"[Task {task_id}] Consolidating dataset...")
@@ -316,14 +315,16 @@ def process_single_task(
         lock_manager.save_task_checkpoint(
             task_id,
             status='completed',
-            num_episodes=len(valid_datasets),
+            num_episodes=processed_count,
+            failed_episodes=failed_count,
             pid=os.getpid()
         )
         
         return {
             'task_id': task_id,
             'status': 'completed',
-            'num_episodes': len(valid_datasets)
+            'num_episodes': processed_count,
+            'failed_episodes': failed_count
         }
     
     except Exception as e:
