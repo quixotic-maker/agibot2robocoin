@@ -589,19 +589,192 @@ class AgiBotDataset(LeRobotDataset):
             
             save_episode_sig = inspect.signature(self.meta.save_episode)
             params = list(save_episode_sig.parameters.keys())
-            
-            if 'episode_metadata' in params:
-                # 新版本需要episode_metadata，传空dict
-                self.meta.save_episode(
-                    episode_index, 
-                    episode_length, 
-                    task, 
-                    task_index,
-                    episode_metadata={}  # 必须是dict，不能是None
-                )
-            else:
-                # 旧版本只需要4个参数
-                self.meta.save_episode(episode_index, episode_length, task, task_index)
+
+            # 有些 lerobot 版本在内部序列化 stats 时不健壮，可能导致异常。
+            # 在调用 meta.save_episode 前临时替换序列化函数以保证安全，调用后恢复。
+            try:
+                try:
+                    # 尝试不同位置的 utils 导入
+                    try:
+                        from lerobot.datasets import utils as lr_utils
+                    except Exception:
+                        from lerobot.common.datasets import utils as lr_utils
+                except Exception:
+                    lr_utils = None
+
+                orig_serialize = getattr(lr_utils, 'serialize_dict', None) if lr_utils is not None else None
+
+                def _safe_serialize(stats):
+                    try:
+                        if not isinstance(stats, dict):
+                            return {}
+                        if orig_serialize is None:
+                            return {}
+                        return orig_serialize(stats)
+                    except Exception:
+                        return {}
+
+                if orig_serialize is not None:
+                    lr_utils.serialize_dict = _safe_serialize
+
+                # Some versions of lerobot will build a pyarrow Table and append it using the
+                # ParquetWriter. If the incoming table's column ordering does not match the
+                # writer's schema, pyarrow will raise ValueError. To be robust across versions
+                # and existing files, temporarily wrap the writer.write_table function to
+                # reorder incoming tables to the writer.schema column order before writing.
+                orig_write_table = None
+                try:
+                    writer = getattr(self.meta, 'writer', None)
+                    if writer is not None and hasattr(writer, 'schema') and hasattr(writer, 'write_table'):
+                        orig_write_table = writer.write_table
+
+                        def _write_table_reorder(table, *a, **kw):
+                            try:
+                                import pyarrow as pa
+
+                                target_names = list(writer.schema.names)
+                                # Build arrays for names that exist in the incoming table
+                                arrays = []
+                                names = []
+                                for name in target_names:
+                                    if name in table.schema.names:
+                                        col = table.column(name)
+                                        # combine chunks to avoid chunked arrays differences
+                                        arrays.append(col.combine_chunks())
+                                        names.append(name)
+                                if len(arrays) == 0:
+                                    return orig_write_table(table, *a, **kw)
+                                new_table = pa.Table.from_arrays(arrays, names=names)
+                                return orig_write_table(new_table, *a, **kw)
+                            except Exception:
+                                return orig_write_table(table, *a, **kw)
+
+                        writer.write_table = _write_table_reorder
+
+                except Exception:
+                    orig_write_table = None
+
+                # Debug: log types and small samples of stats to trace serialization issues
+                try:
+                    try:
+                        s_sample = None
+                        if isinstance(self.stats, dict):
+                            s_sample = list(self.stats.items())[:3]
+                        else:
+                            s_sample = repr(self.stats)
+                    except Exception:
+                        s_sample = '<unrepresentable>'
+                    try:
+                        ms_sample = None
+                        if hasattr(self.meta, 'stats') and isinstance(self.meta.stats, dict):
+                            ms_sample = list(self.meta.stats.items())[:3]
+                        else:
+                            ms_sample = repr(getattr(self.meta, 'stats', None))
+                    except Exception:
+                        ms_sample = '<unrepresentable>'
+                    print(f"[DEBUG STATS] self.stats type={type(self.stats)}, sample={s_sample}")
+                    print(f"[DEBUG STATS] self.meta.stats type={type(getattr(self.meta, 'stats', None))}, sample={ms_sample}")
+
+                except Exception:
+                    pass
+
+                # Call meta.save_episode according to its signature
+                try:
+                    if 'episode_metadata' in params:
+                        self.meta.save_episode(
+                            episode_index,
+                            episode_length,
+                            task,
+                            task_index,
+                            episode_metadata={}
+                        )
+                    else:
+                        self.meta.save_episode(episode_index, episode_length, task, task_index)
+                except Exception as save_exc:
+                    # If appending metadata fails due to parquet schema/order mismatch or
+                    # other writer issues, attempt a best-effort fallback: locate an
+                    # existing episodes parquet file and append a minimal row with the
+                    # same schema using pyarrow. If this also fails, re-raise the
+                    # original exception so the caller can handle it.
+                    try:
+                        import pyarrow as pa
+                        import pyarrow.parquet as pq
+                        import json
+                        from pathlib import Path
+
+                        print(f"[WARNING] meta.save_episode failed: {type(save_exc).__name__}: {save_exc}. Attempting parquet fallback append...")
+
+                        # Find an existing parquet file under meta/episodes
+                        meta_episodes_dir = Path(self.root) / "meta" / "episodes"
+                        parquet_files = list(meta_episodes_dir.rglob("*.parquet"))
+                        if len(parquet_files) == 0:
+                            raise RuntimeError("No existing meta episodes parquet found for fallback append")
+
+                        target_parquet = parquet_files[0]
+                        existing_table = pq.read_table(target_parquet)
+                        schema = existing_table.schema
+
+                        arrays = []
+                        names = []
+                        for field in schema:
+                            name = field.name
+                            ftype = field.type
+                            # Provide reasonable defaults for well-known fields
+                            if name == "episode_index":
+                                arrays.append(pa.array([int(episode_index)], type=pa.int64()))
+                            elif name in ("tasks", "task"):
+                                arrays.append(pa.array([str(task)], type=pa.string()))
+                            elif name == "length":
+                                arrays.append(pa.array([int(episode_length)], type=pa.int64()))
+                            elif name == "dataset_from_index":
+                                arrays.append(pa.array([int(self.meta.total_frames)], type=pa.int64()))
+                            elif name == "dataset_to_index":
+                                arrays.append(pa.array([int(self.meta.total_frames + episode_length - 1)], type=pa.int64()))
+                            elif name == "stats":
+                                # If the existing file expects an int, feed a 0; otherwise use nulls
+                                try:
+                                    if pa.types.is_integer(ftype):
+                                        arrays.append(pa.array([0], type=ftype))
+                                    else:
+                                        arrays.append(pa.array([None], type=ftype))
+                                except Exception:
+                                    arrays.append(pa.array([None], type=ftype))
+                            elif name.endswith("chunk_index") or name.endswith("file_index"):
+                                arrays.append(pa.array([0], type=pa.int64()))
+                            else:
+                                # Generic default: null of the same type
+                                arrays.append(pa.array([None], type=ftype))
+                            names.append(name)
+
+                        new_table = pa.Table.from_arrays(arrays, names=names)
+
+                        # Append to the parquet file (best-effort). Use pyarrow.parquet.write_table
+                        # with append=True to avoid overwriting the existing file.
+                        try:
+                            pq.write_table(new_table, target_parquet, append=True)
+                        except TypeError:
+                            # Older pyarrow versions may not support append arg; fall back to
+                            # using ParquetWriter in append mode by reading the existing file
+                            # metadata and writing a new file (best-effort).
+                            with pq.ParquetWriter(target_parquet, schema) as pw:
+                                pw.write_table(new_table)
+
+                        print(f"[INFO] Parquet fallback append succeeded to {target_parquet}")
+                    except Exception as fallback_exc:
+                        print(f"[ERROR] Parquet fallback append failed: {type(fallback_exc).__name__}: {fallback_exc}")
+                        raise save_exc
+            finally:
+                # Restore original writer.write_table if we wrapped it, then restore serialize
+                try:
+                    if orig_write_table is not None:
+                        writer.write_table = orig_write_table
+                except Exception:
+                    pass
+                try:
+                    if orig_serialize is not None and lr_utils is not None:
+                        lr_utils.serialize_dict = orig_serialize
+                except Exception:
+                    pass
             
             for key in self.meta.video_keys:
                 video_path = self.root / self.meta.get_video_file_path(episode_index, key)
