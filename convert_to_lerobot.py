@@ -471,6 +471,13 @@ class AgiBotDataset(LeRobotDataset):
             )
 
         task_index = self.meta.get_task_index(task)
+        
+        # 如果tasks还没初始化（第一次保存episode时），需要确保meta.tasks存在
+        if not hasattr(self.meta, 'tasks') or self.meta.tasks is None:
+            # 这种情况不应该发生，但为了防御性编程，添加检查
+            import pandas as pd
+            self.meta.tasks = pd.DataFrame({'task': [task], 'task_index': [0]})
+            task_index = 0
 
         # 移除'size'键（之前的pop操作移到这里，在验证之后）
         episode_buffer.pop("size")
