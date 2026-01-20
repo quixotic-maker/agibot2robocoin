@@ -470,15 +470,20 @@ class AgiBotDataset(LeRobotDataset):
                 "match the total number of episodes in the dataset. This is not supported for now."
             )
 
-        task_index = self.meta.get_task_index(task)
-        
-        # 如果tasks还没初始化（第一次保存episode时），需要确保meta.tasks存在
-        if not hasattr(self.meta, 'tasks') or self.meta.tasks is None:
-            # 这种情况不应该发生，但为了防御性编程，添加检查
+        # 获取task_index，如果meta.tasks未初始化则手动处理
+        try:
+            task_index = self.meta.get_task_index(task)
+        except (AttributeError, TypeError) as e:
+            # meta.tasks可能是None或未初始化，手动创建
+            print(f"[WARNING] meta.tasks not initialized, creating new tasks table. Error: {e}")
             import pandas as pd
-            self.meta.tasks = pd.DataFrame({'task': [task], 'task_index': [0]})
-            task_index = 0
-
+            if not hasattr(self.meta, 'tasks') or self.meta.tasks is None:
+                self.meta.tasks = pd.DataFrame({'task': [], 'task_index': []})
+            # 添加新task
+            task_index = len(self.meta.tasks)
+            new_task = pd.DataFrame({'task': [task], 'task_index': [task_index]})
+            self.meta.tasks = pd.concat([self.meta.tasks, new_task], ignore_index=True)
+        
         # 移除'size'键（之前的pop操作移到这里，在验证之后）
         episode_buffer.pop("size")
         
