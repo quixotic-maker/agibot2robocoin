@@ -547,10 +547,31 @@ def load_local_dataset(episode_id: int, src_path: str, task_id: int) -> list | N
     """
     try:
         ob_dir = Path(src_path) / f"observations/{task_id}/{episode_id}"
+        
+        # 检查目录是否存在
+        if not ob_dir.exists():
+            raise FileNotFoundError(f"Observation directory not found: {ob_dir}")
+        
         depth_imgs = load_depths(ob_dir / "depth", HEAD_DEPTH)
         proprio_dir = Path(src_path) / f"proprio_stats/{task_id}/{episode_id}"
+        
+        h5_file = proprio_dir / "proprio_stats.h5"
+        if not h5_file.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {h5_file}")
 
-        with h5py.File(proprio_dir / "proprio_stats.h5") as f:
+        with h5py.File(h5_file, 'r') as f:
+            # 检查必需的键是否存在
+            required_keys = [
+                "state/joint/position", "state/effector/position",
+                "state/head/position", "state/waist/position",
+                "action/joint/position", "action/effector/position",
+                "action/head/position", "action/waist/position",
+                "action/robot/velocity"
+            ]
+            for key in required_keys:
+                if key not in f:
+                    raise KeyError(f"Missing key '{key}' in HDF5 file: {h5_file}")
+            
             state_joint = np.array(f["state/joint/position"])
             state_effector = np.array(f["state/effector/position"])
             state_head = np.array(f["state/head/position"])
