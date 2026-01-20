@@ -494,9 +494,23 @@ class AgiBotDataset(LeRobotDataset):
         # 先用episode_length读取size的值，不要pop，避免后续异常时buffer损坏
         # size会在验证通过后才删除
         
-        if not set(episode_buffer.keys()) == set(self.features):
+        # 检查buffer keys和features的匹配：video类型的features不在buffer里，要排除
+        expected_buffer_keys = set()
+        for key, ft in self.features.items():
+            if key not in ["index", "task_index"] and ft["dtype"] not in ["image", "video"]:
+                expected_buffer_keys.add(key)
+            elif ft["dtype"] == "image":
+                expected_buffer_keys.add(key)
+        expected_buffer_keys.update(["size", "episode_index", "frame_index", "timestamp"])
+        
+        actual_buffer_keys = set(episode_buffer.keys())
+        if actual_buffer_keys != expected_buffer_keys:
             # 这里可能会抛异常，所以size还不能删除
-            raise ValueError(f"Buffer keys mismatch. Buffer: {set(episode_buffer.keys())}, Features: {set(self.features)}")
+            raise ValueError(
+                f"Buffer keys mismatch.\n"
+                f"  Missing in buffer: {expected_buffer_keys - actual_buffer_keys}\n"
+                f"  Extra in buffer: {actual_buffer_keys - expected_buffer_keys}"
+            )
 
         for key, ft in self.features.items():
             if key == "index":
