@@ -410,6 +410,10 @@ class AgiBotDataset(LeRobotDataset):
         # 确保stats被初始化为dict而不是其他类型
         if not hasattr(self, 'stats') or not isinstance(self.stats, dict):
             self.stats = {}
+        
+        # 确保meta.stats也被初始化为dict（关键！）
+        if not hasattr(self.meta, 'stats') or not isinstance(self.meta.stats, dict):
+            self.meta.stats = {}
     
     def create_episode_buffer(self):
         """覆盖父类方法，确保返回的buffer包含必需的键"""
