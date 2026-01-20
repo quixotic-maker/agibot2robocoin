@@ -508,108 +508,107 @@ class AgiBotDataset(LeRobotDataset):
 
             # 使用get而不是pop，避免异常时损坏buffer
             episode_length = episode_buffer.get("size", 0)
-        if episode_length == 0:
-            raise ValueError(
-                "You must add one or several frames with `add_frame` before calling `add_episode`."
-            )
-        
-        episode_index = episode_buffer["episode_index"]
-        if episode_index != self.meta.total_episodes:
-            # TODO(aliberts): Add option to use existing episode_index
-            raise NotImplementedError(
-                "You might have manually provided the episode_buffer with an episode_index that doesn't "
-                "match the total number of episodes in the dataset. This is not supported for now."
-            )
-
-        # 使用我们自己的get_task_index方法（已覆盖父类）
-        task_index = self.get_task_index(task)
-        
-        # 先用episode_length读取size的值，不要pop，避免后续异常时buffer损坏
-        # size会在验证通过后才删除
-        
-        # 检查buffer keys和features的匹配：video类型的features不在buffer里，要排除
-        expected_buffer_keys = set()
-        for key, ft in self.features.items():
-            if key not in ["index", "task_index"] and ft["dtype"] not in ["image", "video"]:
-                expected_buffer_keys.add(key)
-            elif ft["dtype"] == "image":
-                expected_buffer_keys.add(key)
-        expected_buffer_keys.update(["size", "episode_index", "frame_index", "timestamp"])
-        
-        actual_buffer_keys = set(episode_buffer.keys())
-        if actual_buffer_keys != expected_buffer_keys:
-            # 这里可能会抛异常，所以size还不能删除
-            raise ValueError(
-                f"Buffer keys mismatch.\n"
-                f"  Missing in buffer: {expected_buffer_keys - actual_buffer_keys}\n"
-                f"  Extra in buffer: {actual_buffer_keys - expected_buffer_keys}"
-            )
-
-        for key, ft in self.features.items():
-            if key == "index":
-                episode_buffer[key] = np.arange(
-                    self.meta.total_frames, self.meta.total_frames + episode_length
+            if episode_length == 0:
+                raise ValueError(
+                    "You must add one or several frames with `add_frame` before calling `add_episode`."
                 )
-            elif key == "episode_index":
-                episode_buffer[key] = np.full((episode_length,), episode_index)
-            elif key == "task_index":
-                episode_buffer[key] = np.full((episode_length,), task_index)
-            elif ft["dtype"] in ["image", "video"]:
-                continue
-            elif len(ft["shape"]) == 1 and ft["shape"][0] == 1:
-                episode_buffer[key] = np.array(episode_buffer[key], dtype=ft["dtype"])
-            elif len(ft["shape"]) == 1 and ft["shape"][0] > 1:
-                episode_buffer[key] = np.stack(episode_buffer[key])
-            else:
-                raise ValueError(key)
+            episode_index = episode_buffer["episode_index"]
+            if episode_index != self.meta.total_episodes:
+                # TODO(aliberts): Add option to use existing episode_index
+                raise NotImplementedError(
+                    "You might have manually provided the episode_buffer with an episode_index that doesn't "
+                    "match the total number of episodes in the dataset. This is not supported for now."
+                )
 
-        # 所有验证和转换都完成了，现在可以安全地删除'size'键
-        episode_buffer.pop("size", None)
-        
-        self._wait_image_writer()
-        
-        # 尝试调用父类的_save_episode_table，如果不存在则跳过
-        try:
-            self._save_episode_table(episode_buffer, episode_index)
-        except AttributeError:
-            # 某些版本的lerobot没有这个方法，直接保存到hf_dataset
-            import pyarrow as pa
-            if not hasattr(self, 'hf_dataset') or self.hf_dataset is None:
-                # 第一次保存，需要创建dataset
-                pass  # consolidate时会创建
-            else:
-                # 追加到现有dataset
-                pass  # 也在consolidate时处理
-
-        # 调用meta.save_episode，兼容不同版本的参数签名
-        import inspect
-        
-        # 在调用save_episode之前，再次确保meta.stats是dict（可能被运行时修改）
-        if not hasattr(self.meta, 'stats') or not isinstance(self.meta.stats, dict):
-            self.meta.stats = {}
-        
-        save_episode_sig = inspect.signature(self.meta.save_episode)
-        params = list(save_episode_sig.parameters.keys())
-        
-        if 'episode_metadata' in params:
-            # 新版本需要episode_metadata，传空dict
-            self.meta.save_episode(
-                episode_index, 
-                episode_length, 
-                task, 
-                task_index,
-                episode_metadata={}  # 必须是dict，不能是None
-            )
-        else:
-            # 旧版本只需要4个参数
-            self.meta.save_episode(episode_index, episode_length, task, task_index)
-        
-        for key in self.meta.video_keys:
-            video_path = self.root / self.meta.get_video_file_path(episode_index, key)
-            episode_buffer[key] = video_path
-            video_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(videos[key], video_path)
+            # 使用我们自己的get_task_index方法（已覆盖父类）
+            task_index = self.get_task_index(task)
             
+            # 先用episode_length读取size的值，不要pop，避免后续异常时buffer损坏
+            # size会在验证通过后才删除
+            
+            # 检查buffer keys和features的匹配：video类型的features不在buffer里，要排除
+            expected_buffer_keys = set()
+            for key, ft in self.features.items():
+                if key not in ["index", "task_index"] and ft["dtype"] not in ["image", "video"]:
+                    expected_buffer_keys.add(key)
+                elif ft["dtype"] == "image":
+                    expected_buffer_keys.add(key)
+            expected_buffer_keys.update(["size", "episode_index", "frame_index", "timestamp"])
+            
+            actual_buffer_keys = set(episode_buffer.keys())
+            if actual_buffer_keys != expected_buffer_keys:
+                # 这里可能会抛异常，所以size还不能删除
+                raise ValueError(
+                    f"Buffer keys mismatch.\n"
+                    f"  Missing in buffer: {expected_buffer_keys - actual_buffer_keys}\n"
+                    f"  Extra in buffer: {actual_buffer_keys - expected_buffer_keys}"
+                )
+
+            for key, ft in self.features.items():
+                if key == "index":
+                    episode_buffer[key] = np.arange(
+                        self.meta.total_frames, self.meta.total_frames + episode_length
+                    )
+                elif key == "episode_index":
+                    episode_buffer[key] = np.full((episode_length,), episode_index)
+                elif key == "task_index":
+                    episode_buffer[key] = np.full((episode_length,), task_index)
+                elif ft["dtype"] in ["image", "video"]:
+                    continue
+                elif len(ft["shape"]) == 1 and ft["shape"][0] == 1:
+                    episode_buffer[key] = np.array(episode_buffer[key], dtype=ft["dtype"])
+                elif len(ft["shape"]) == 1 and ft["shape"][0] > 1:
+                    episode_buffer[key] = np.stack(episode_buffer[key])
+                else:
+                    raise ValueError(key)
+
+            # 所有验证和转换都完成了，现在可以安全地删除'size'键
+            episode_buffer.pop("size", None)
+            
+            self._wait_image_writer()
+            
+            # 尝试调用父类的_save_episode_table，如果不存在则跳过
+            try:
+                self._save_episode_table(episode_buffer, episode_index)
+            except AttributeError:
+                # 某些版本的lerobot没有这个方法，直接保存到hf_dataset
+                import pyarrow as pa
+                if not hasattr(self, 'hf_dataset') or self.hf_dataset is None:
+                    # 第一次保存，需要创建dataset
+                    pass  # consolidate时会创建
+                else:
+                    # 追加到现有dataset
+                    pass  # 也在consolidate时处理
+
+            # 调用meta.save_episode，兼容不同版本的参数签名
+            import inspect
+            
+            # 在调用save_episode之前，再次确保meta.stats是dict（可能被运行时修改）
+            if not hasattr(self.meta, 'stats') or not isinstance(self.meta.stats, dict):
+                self.meta.stats = {}
+            
+            save_episode_sig = inspect.signature(self.meta.save_episode)
+            params = list(save_episode_sig.parameters.keys())
+            
+            if 'episode_metadata' in params:
+                # 新版本需要episode_metadata，传空dict
+                self.meta.save_episode(
+                    episode_index, 
+                    episode_length, 
+                    task, 
+                    task_index,
+                    episode_metadata={}  # 必须是dict，不能是None
+                )
+            else:
+                # 旧版本只需要4个参数
+                self.meta.save_episode(episode_index, episode_length, task, task_index)
+            
+            for key in self.meta.video_keys:
+                video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+                episode_buffer[key] = video_path
+                video_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(videos[key], video_path)
+                
             self.consolidated = False
         finally:
             # 无论成功失败，都重置buffer，避免损坏的buffer影响后续episode
