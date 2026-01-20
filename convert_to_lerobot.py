@@ -491,11 +491,12 @@ class AgiBotDataset(LeRobotDataset):
         # 使用我们自己的get_task_index方法（已覆盖父类）
         task_index = self.get_task_index(task)
         
-        # 移除'size'键（之前的pop操作移到这里，在验证之后）
-        episode_buffer.pop("size")
+        # 先用episode_length读取size的值，不要pop，避免后续异常时buffer损坏
+        # size会在验证通过后才删除
         
         if not set(episode_buffer.keys()) == set(self.features):
-            raise ValueError()
+            # 这里可能会抛异常，所以size还不能删除
+            raise ValueError(f"Buffer keys mismatch. Buffer: {set(episode_buffer.keys())}, Features: {set(self.features)}")
 
         for key, ft in self.features.items():
             if key == "index":
@@ -515,6 +516,9 @@ class AgiBotDataset(LeRobotDataset):
             else:
                 raise ValueError(key)
 
+        # 所有验证和转换都完成了，现在可以安全地删除'size'键
+        episode_buffer.pop("size", None)
+        
         self._wait_image_writer()
         self._save_episode_table(episode_buffer, episode_index)
 
