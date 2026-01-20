@@ -442,6 +442,24 @@ class AgiBotDataset(LeRobotDataset):
             if key not in buffer:
                 buffer[key] = []
         
+        # 清理掉父类可能添加的不需要的keys（video/index/task_index等）
+        keys_to_remove = []
+        for key in buffer.keys():
+            if key in ["size", "episode_index", "frame_index", "timestamp"]:
+                # 元数据，保留
+                continue
+            if key in self.features:
+                ft = self.features[key]
+                if ft["dtype"] == "video" or key in ["index", "task_index"]:
+                    # video类型或自动生成的字段，删除
+                    keys_to_remove.append(key)
+            elif key == "task":
+                # task也不应该在buffer里
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            buffer.pop(key, None)
+        
         print(f"[DEBUG] Final buffer keys: {list(buffer.keys())}")
         return buffer
     
