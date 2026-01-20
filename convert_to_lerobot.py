@@ -582,6 +582,11 @@ class AgiBotDataset(LeRobotDataset):
 
         # 调用meta.save_episode，兼容不同版本的参数签名
         import inspect
+        
+        # 在调用save_episode之前，再次确保meta.stats是dict（可能被运行时修改）
+        if not hasattr(self.meta, 'stats') or not isinstance(self.meta.stats, dict):
+            self.meta.stats = {}
+        
         save_episode_sig = inspect.signature(self.meta.save_episode)
         params = list(save_episode_sig.parameters.keys())
         
