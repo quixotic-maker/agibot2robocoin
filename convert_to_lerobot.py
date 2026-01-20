@@ -496,17 +496,18 @@ class AgiBotDataset(LeRobotDataset):
         """
         We rewrite this method to copy mp4 videos to the target position
         """
-        if not episode_data:
-            episode_buffer = self.episode_buffer
-        
-        # 防御性检查：确保episode_buffer有'size'键
-        if "size" not in episode_buffer:
-            raise RuntimeError(
-                f"episode_buffer missing 'size' key. Keys present: {list(episode_buffer.keys())}"
-            )
+        try:
+            if not episode_data:
+                episode_buffer = self.episode_buffer
+            
+            # 防御性检查：确保episode_buffer有'size'键
+            if "size" not in episode_buffer:
+                raise RuntimeError(
+                    f"episode_buffer missing 'size' key. Keys present: {list(episode_buffer.keys())}"
+                )
 
-        # 使用get而不是pop，避免异常时损坏buffer
-        episode_length = episode_buffer.get("size", 0)
+            # 使用get而不是pop，避免异常时损坏buffer
+            episode_length = episode_buffer.get("size", 0)
         if episode_length == 0:
             raise ValueError(
                 "You must add one or several frames with `add_frame` before calling `add_episode`."
@@ -608,9 +609,12 @@ class AgiBotDataset(LeRobotDataset):
             episode_buffer[key] = video_path
             video_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(videos[key], video_path)
-        if not episode_data:  # Reset the buffer
-            self.episode_buffer = self.create_episode_buffer()
-        self.consolidated = False
+            
+            self.consolidated = False
+        finally:
+            # 无论成功失败，都重置buffer，避免损坏的buffer影响后续episode
+            if not episode_data:
+                self.episode_buffer = self.create_episode_buffer()
 
     def consolidate(
         self, run_compute_stats: bool = True, keep_image_files: bool = False
