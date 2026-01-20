@@ -412,8 +412,13 @@ class AgiBotDataset(LeRobotDataset):
         try:
             # 尝试调用父类方法
             buffer = super().create_episode_buffer()
-        except AttributeError:
+            print(f"[DEBUG] Parent create_episode_buffer returned: {type(buffer)}, keys: {buffer.keys() if hasattr(buffer, 'keys') else 'N/A'}")
+        except AttributeError as e:
             # 如果父类没有这个方法，手动创建
+            print(f"[DEBUG] Parent has no create_episode_buffer: {e}")
+            buffer = {}
+        except Exception as e:
+            print(f"[DEBUG] Parent create_episode_buffer failed: {type(e).__name__}: {e}")
             buffer = {}
         
         # 确保有必需的键
@@ -431,6 +436,7 @@ class AgiBotDataset(LeRobotDataset):
             if key not in buffer and key not in ["index", "episode_index", "task_index"]:
                 buffer[key] = []
         
+        print(f"[DEBUG] Final buffer keys: {list(buffer.keys())}")
         return buffer
 
 
