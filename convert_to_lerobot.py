@@ -572,7 +572,20 @@ class AgiBotDataset(LeRobotDataset):
                 # 追加到现有dataset
                 pass  # 也在consolidate时处理
 
-        self.meta.save_episode(episode_index, episode_length, task, task_index)
+        # 调用meta.save_episode，兼容不同版本的参数签名
+        try:
+            # 新版本需要episode_metadata参数
+            self.meta.save_episode(
+                episode_index, 
+                episode_length, 
+                task, 
+                task_index,
+                episode_metadata={}  # 或其他必要的metadata
+            )
+        except TypeError:
+            # 旧版本只需要4个参数
+            self.meta.save_episode(episode_index, episode_length, task, task_index)
+        
         for key in self.meta.video_keys:
             video_path = self.root / self.meta.get_video_file_path(episode_index, key)
             episode_buffer[key] = video_path
