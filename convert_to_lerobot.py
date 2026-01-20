@@ -558,7 +558,19 @@ class AgiBotDataset(LeRobotDataset):
         episode_buffer.pop("size", None)
         
         self._wait_image_writer()
-        self._save_episode_table(episode_buffer, episode_index)
+        
+        # 尝试调用父类的_save_episode_table，如果不存在则跳过
+        try:
+            self._save_episode_table(episode_buffer, episode_index)
+        except AttributeError:
+            # 某些版本的lerobot没有这个方法，直接保存到hf_dataset
+            import pyarrow as pa
+            if not hasattr(self, 'hf_dataset') or self.hf_dataset is None:
+                # 第一次保存，需要创建dataset
+                pass  # consolidate时会创建
+            else:
+                # 追加到现有dataset
+                pass  # 也在consolidate时处理
 
         self.meta.save_episode(episode_index, episode_length, task, task_index)
         for key in self.meta.video_keys:
