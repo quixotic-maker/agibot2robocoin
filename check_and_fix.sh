@@ -14,6 +14,27 @@ echo "Checkpoint目录: $CHECKPOINT_DIR"
 echo "输出目录: $OUTPUT_DIR"
 echo ""
 
+# 检查jq是否可用
+if ! command -v jq &> /dev/null; then
+    echo "警告: jq未安装，使用python解析JSON"
+    USE_PYTHON=1
+else
+    USE_PYTHON=0
+fi
+
+# JSON解析函数
+get_json_field() {
+    local file="$1"
+    local field="$2"
+    local default="$3"
+    
+    if [ $USE_PYTHON -eq 1 ]; then
+        python3 -c "import json; f=open('$file'); d=json.load(f); print(d.get('$field', '$default'))" 2>/dev/null || echo "$default"
+    else
+        jq -r ".$field // \"$default\"" "$file" 2>/dev/null || echo "$default"
+    fi
+}
+
 # 统计
 total_tasks=0
 completed_tasks=0
@@ -31,7 +52,7 @@ for checkpoint in "$CHECKPOINT_DIR"/task_*.json; do
     if [ -f "$checkpoint" ]; then
         total_tasks=$((total_tasks + 1))
         task_id=$(basename "$checkpoint" | sed 's/task_//' | sed 's/.json//')
-        status=$(jq -r '.status // "unknown"' "$checkpoint" 2>/dev/null || echo "unknown")
+        status=$(get_json_field "$checkpoint" "status" "unknown")
         
         case "$status" in
             completed)
@@ -49,7 +70,7 @@ for checkpoint in "$CHECKPOINT_DIR"/task_*.json; do
                 ;;
             skipped)
                 # 检查是否因为目录存在而跳过
-                reason=$(jq -r '.reason // ""' "$checkpoint" 2>/dev/null)
+                reason=$(get_json_field "$checkpoint" "reason" "")
                 if [ "$reason" == "directory_already_exists" ]; then
                     # 检查目录是否真的完整
                     task_dir="$OUTPUT_DIR/task_$task_id"
