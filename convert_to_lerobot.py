@@ -573,16 +573,20 @@ class AgiBotDataset(LeRobotDataset):
                 pass  # 也在consolidate时处理
 
         # 调用meta.save_episode，兼容不同版本的参数签名
-        try:
-            # 新版本需要episode_metadata参数
+        import inspect
+        save_episode_sig = inspect.signature(self.meta.save_episode)
+        params = list(save_episode_sig.parameters.keys())
+        
+        if 'episode_metadata' in params:
+            # 新版本需要episode_metadata，但传None让它用默认值
             self.meta.save_episode(
                 episode_index, 
                 episode_length, 
                 task, 
                 task_index,
-                episode_metadata={}  # 或其他必要的metadata
+                episode_metadata=None
             )
-        except TypeError:
+        else:
             # 旧版本只需要4个参数
             self.meta.save_episode(episode_index, episode_length, task, task_index)
         
