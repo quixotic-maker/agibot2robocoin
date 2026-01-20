@@ -406,6 +406,10 @@ class AgiBotDataset(LeRobotDataset):
             local_files_only=local_files_only,
             video_backend=video_backend,
         )
+        
+        # 确保stats被初始化为dict而不是其他类型
+        if not hasattr(self, 'stats') or not isinstance(self.stats, dict):
+            self.stats = {}
     
     def create_episode_buffer(self):
         """覆盖父类方法，确保返回的buffer包含必需的键"""
@@ -578,13 +582,13 @@ class AgiBotDataset(LeRobotDataset):
         params = list(save_episode_sig.parameters.keys())
         
         if 'episode_metadata' in params:
-            # 新版本需要episode_metadata，但传None让它用默认值
+            # 新版本需要episode_metadata，传空dict
             self.meta.save_episode(
                 episode_index, 
                 episode_length, 
                 task, 
                 task_index,
-                episode_metadata=None
+                episode_metadata={}  # 必须是dict，不能是None
             )
         else:
             # 旧版本只需要4个参数
