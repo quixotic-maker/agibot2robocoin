@@ -539,60 +539,69 @@ def load_depths(root_dir: str, camera_name: str):
 
 
 def load_local_dataset(episode_id: int, src_path: str, task_id: int) -> list | None:
-    """Load local dataset and return a dict with observations and actions"""
+    """Load local dataset and return a dict with observations and actions
+    
+    Returns:
+        tuple(frames, videos) if successful
+        None if failed (e.g., corrupted data, missing files)
+    """
+    try:
+        ob_dir = Path(src_path) / f"observations/{task_id}/{episode_id}"
+        depth_imgs = load_depths(ob_dir / "depth", HEAD_DEPTH)
+        proprio_dir = Path(src_path) / f"proprio_stats/{task_id}/{episode_id}"
 
-    ob_dir = Path(src_path) / f"observations/{task_id}/{episode_id}"
-    depth_imgs = load_depths(ob_dir / "depth", HEAD_DEPTH)
-    proprio_dir = Path(src_path) / f"proprio_stats/{task_id}/{episode_id}"
+        with h5py.File(proprio_dir / "proprio_stats.h5") as f:
+            state_joint = np.array(f["state/joint/position"])
+            state_effector = np.array(f["state/effector/position"])
+            state_head = np.array(f["state/head/position"])
+            state_waist = np.array(f["state/waist/position"])
+            action_joint = np.array(f["action/joint/position"])
+            action_effector = np.array(f["action/effector/position"])
+            action_head = np.array(f["action/head/position"])
+            action_waist = np.array(f["action/waist/position"])
+            action_velocity = np.array(f["action/robot/velocity"])
 
-    with h5py.File(proprio_dir / "proprio_stats.h5") as f:
-        state_joint = np.array(f["state/joint/position"])
-        state_effector = np.array(f["state/effector/position"])
-        state_head = np.array(f["state/head/position"])
-        state_waist = np.array(f["state/waist/position"])
-        action_joint = np.array(f["action/joint/position"])
-        action_effector = np.array(f["action/effector/position"])
-        action_head = np.array(f["action/head/position"])
-        action_waist = np.array(f["action/waist/position"])
-        action_velocity = np.array(f["action/robot/velocity"])
+        states_value = np.hstack(
+            [state_joint, state_effector, state_head, state_waist]
+        ).astype(np.float32)
+        assert (
+            action_joint.shape[0] == action_effector.shape[0]
+        ), f"shape of action_joint:{action_joint.shape};shape of action_effector:{action_effector.shape}"
+        action_value = np.hstack(
+            [action_joint, action_effector, action_head, action_waist, action_velocity]
+        ).astype(np.float32)
 
-    states_value = np.hstack(
-        [state_joint, state_effector, state_head, state_waist]
-    ).astype(np.float32)
-    assert (
-        action_joint.shape[0] == action_effector.shape[0]
-    ), f"shape of action_joint:{action_joint.shape};shape of action_effector:{action_effector.shape}"
-    action_value = np.hstack(
-        [action_joint, action_effector, action_head, action_waist, action_velocity]
-    ).astype(np.float32)
+        assert len(depth_imgs) == len(
+            states_value
+        ), f"Number of images and states are not equal"
+        assert len(depth_imgs) == len(
+            action_value
+        ), f"Number of images and actions are not equal"
+        frames = [
+            {
+                "observation.images.cam_top_depth": depth_imgs[i],
+                "observation.state": states_value[i],
+                "action": action_value[i],
+            }
+            for i in range(len(depth_imgs))
+        ]
 
-    assert len(depth_imgs) == len(
-        states_value
-    ), f"Number of images and states are not equal"
-    assert len(depth_imgs) == len(
-        action_value
-    ), f"Number of images and actions are not equal"
-    frames = [
-        {
-            "observation.images.cam_top_depth": depth_imgs[i],
-            "observation.state": states_value[i],
-            "action": action_value[i],
+        v_path = ob_dir / "videos"
+        videos = {
+            "observation.images.top_head": v_path / HEAD_COLOR,
+            "observation.images.hand_left": v_path / HAND_LEFT_COLOR,
+            "observation.images.hand_right": v_path / HAND_RIGHT_COLOR,
+            "observation.images.head_center_fisheye": v_path / HEAD_CENTER_FISHEYE_COLOR,
+            "observation.images.head_left_fisheye": v_path / HEAD_LEFT_FISHEYE_COLOR,
+            "observation.images.head_right_fisheye": v_path / HEAD_RIGHT_FISHEYE_COLOR,
+            "observation.images.back_left_fisheye": v_path / BACK_LEFT_FISHEYE_COLOR,
+            "observation.images.back_right_fisheye": v_path / BACK_RIGHT_FISHEYE_COLOR,
         }
-        for i in range(len(depth_imgs))
-    ]
-
-    v_path = ob_dir / "videos"
-    videos = {
-        "observation.images.top_head": v_path / HEAD_COLOR,
-        "observation.images.hand_left": v_path / HAND_LEFT_COLOR,
-        "observation.images.hand_right": v_path / HAND_RIGHT_COLOR,
-        "observation.images.head_center_fisheye": v_path / HEAD_CENTER_FISHEYE_COLOR,
-        "observation.images.head_left_fisheye": v_path / HEAD_LEFT_FISHEYE_COLOR,
-        "observation.images.head_right_fisheye": v_path / HEAD_RIGHT_FISHEYE_COLOR,
-        "observation.images.back_left_fisheye": v_path / BACK_LEFT_FISHEYE_COLOR,
-        "observation.images.back_right_fisheye": v_path / BACK_RIGHT_FISHEYE_COLOR,
-    }
-    return frames, videos
+        return frames, videos
+    except Exception as e:
+        # 数据损坏或缺失，返回None让上层跳过
+        print(f"[WARNING] Episode {episode_id} load failed: {type(e).__name__}: {e}")
+        return None
 
 
 def get_task_instruction(task_json_path: str) -> dict:

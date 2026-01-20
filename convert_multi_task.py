@@ -302,8 +302,16 @@ def process_single_task(
                             processed_count += 1
                             # 主动释放内存
                             del result, frames, videos
+                        else:
+                            # load_local_dataset返回None表示跳过
+                            failed_count += 1
                     except Exception as e:
-                        print(f"[Task {task_id}] Episode {ep_id} failed: {e}")
+                        # 打印详细错误信息，但继续处理其他episodes
+                        import traceback
+                        print(f"\n[Task {task_id}] Episode {ep_id} failed:")
+                        print(f"  Error: {type(e).__name__}: {e}")
+                        if "--verbose" in sys.argv:
+                            traceback.print_exc()
                         failed_count += 1
                     pbar.update(1)
         
