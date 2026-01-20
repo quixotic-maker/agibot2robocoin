@@ -455,7 +455,13 @@ class AgiBotDataset(LeRobotDataset):
                 f"episode_buffer missing 'size' key. Keys present: {list(episode_buffer.keys())}"
             )
 
-        episode_length = episode_buffer.pop("size")
+        # 使用get而不是pop，避免异常时损坏buffer
+        episode_length = episode_buffer.get("size", 0)
+        if episode_length == 0:
+            raise ValueError(
+                "You must add one or several frames with `add_frame` before calling `add_episode`."
+            )
+        
         episode_index = episode_buffer["episode_index"]
         if episode_index != self.meta.total_episodes:
             # TODO(aliberts): Add option to use existing episode_index
@@ -464,13 +470,11 @@ class AgiBotDataset(LeRobotDataset):
                 "match the total number of episodes in the dataset. This is not supported for now."
             )
 
-        if episode_length == 0:
-            raise ValueError(
-                "You must add one or several frames with `add_frame` before calling `add_episode`."
-            )
-
         task_index = self.meta.get_task_index(task)
 
+        # 移除'size'键（之前的pop操作移到这里，在验证之后）
+        episode_buffer.pop("size")
+        
         if not set(episode_buffer.keys()) == set(self.features):
             raise ValueError()
 
