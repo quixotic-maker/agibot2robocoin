@@ -74,13 +74,32 @@ for checkpoint in "$CHECKPOINT_DIR"/task_*.json; do
                 if [ "$reason" == "directory_already_exists" ]; then
                     # 检查目录是否真的完整
                     task_dir="$OUTPUT_DIR/task_$task_id"
+                    is_incomplete=0
+                    
                     if [ -d "$task_dir" ]; then
-                        # 检查是否有data目录和文件
-                        if [ ! -d "$task_dir/data" ] || [ -z "$(ls -A $task_dir/data 2>/dev/null)" ]; then
-                            incomplete_tasks=$((incomplete_tasks + 1))
-                            echo "  ⚠️  Task $task_id - 跳过但数据不完整"
-                            tasks_to_clean+=("$task_id")
+                        # 检查是否有data目录
+                        if [ ! -d "$task_dir/data" ]; then
+                            is_incomplete=1
+                        else
+                            # 检查data目录是否有parquet文件
+                            parquet_count=$(ls "$task_dir/data"/*.parquet 2>/dev/null | wc -l)
+                            if [ "$parquet_count" -eq 0 ]; then
+                                is_incomplete=1
+                            fi
                         fi
+                        
+                        # 检查是否有meta_info
+                        if [ ! -d "$task_dir/meta_info" ]; then
+                            is_incomplete=1
+                        fi
+                    else
+                        is_incomplete=1
+                    fi
+                    
+                    if [ $is_incomplete -eq 1 ]; then
+                        incomplete_tasks=$((incomplete_tasks + 1))
+                        echo "  ⚠️  Task $task_id - 跳过但数据不完整"
+                        tasks_to_clean+=("$task_id")
                     fi
                 fi
                 ;;
