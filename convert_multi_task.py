@@ -296,22 +296,31 @@ def process_single_task(
                         if result is not None:
                             # 立即保存，释放内存
                             frames, videos = result
-                            for frame in frames:
-                                dataset.add_frame(frame)
-                            dataset.save_episode(task=task_name, videos=videos)
-                            processed_count += 1
-                            # 主动释放内存
-                            del result, frames, videos
+                            try:
+                                for frame in frames:
+                                    dataset.add_frame(frame)
+                                dataset.save_episode(task=task_name, videos=videos)
+                                processed_count += 1
+                            except Exception as save_error:
+                                # 保存时出错
+                                import traceback
+                                print(f"\n[Task {task_id}] Episode {ep_id} save failed:")
+                                print(f"  Error: {type(save_error).__name__}: {save_error}")
+                                print(f"  Frames count: {len(frames)}")
+                                traceback.print_exc()
+                                failed_count += 1
+                            finally:
+                                # 主动释放内存
+                                del result, frames, videos
                         else:
                             # load_local_dataset返回None表示跳过
                             failed_count += 1
                     except Exception as e:
-                        # 打印详细错误信息，但继续处理其他episodes
+                        # load_local_dataset加载时出错
                         import traceback
-                        print(f"\n[Task {task_id}] Episode {ep_id} failed:")
+                        print(f"\n[Task {task_id}] Episode {ep_id} load failed:")
                         print(f"  Error: {type(e).__name__}: {e}")
-                        if "--verbose" in sys.argv:
-                            traceback.print_exc()
+                        traceback.print_exc()
                         failed_count += 1
                     pbar.update(1)
         
