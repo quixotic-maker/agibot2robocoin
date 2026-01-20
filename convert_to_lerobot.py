@@ -431,9 +431,15 @@ class AgiBotDataset(LeRobotDataset):
         if "timestamp" not in buffer:
             buffer["timestamp"] = []
         
-        # 为features中的每个键创建空列表
-        for key in self.features:
-            if key not in buffer and key not in ["index", "episode_index", "task_index"]:
+        # 为features中的每个键创建空列表，但排除video/index/task_index等
+        for key, ft in self.features.items():
+            if key in ["index", "episode_index", "task_index"]:
+                # 这些是自动生成的，不需要在buffer里
+                continue
+            if ft["dtype"] in ["video"]:
+                # video类型通过videos参数传递，不在buffer里
+                continue
+            if key not in buffer:
                 buffer[key] = []
         
         print(f"[DEBUG] Final buffer keys: {list(buffer.keys())}")
