@@ -438,6 +438,24 @@ class AgiBotDataset(LeRobotDataset):
         
         print(f"[DEBUG] Final buffer keys: {list(buffer.keys())}")
         return buffer
+    
+    def get_task_index(self, task: str) -> int:
+        """覆盖父类方法，避免meta.tasks为None的问题"""
+        import pandas as pd
+        
+        # 确保meta.tasks存在
+        if not hasattr(self.meta, 'tasks') or self.meta.tasks is None:
+            self.meta.tasks = pd.DataFrame({'task': [], 'task_index': []})
+        
+        # 检查task是否已存在
+        if len(self.meta.tasks) > 0 and task in self.meta.tasks['task'].values:
+            return int(self.meta.tasks[self.meta.tasks['task'] == task]['task_index'].iloc[0])
+        
+        # 添加新task
+        task_index = len(self.meta.tasks)
+        new_task = pd.DataFrame({'task': [task], 'task_index': [task_index]})
+        self.meta.tasks = pd.concat([self.meta.tasks, new_task], ignore_index=True)
+        return task_index
 
 
     def save_episode(
@@ -470,19 +488,8 @@ class AgiBotDataset(LeRobotDataset):
                 "match the total number of episodes in the dataset. This is not supported for now."
             )
 
-        # 获取task_index，如果meta.tasks未初始化则手动处理
-        try:
-            task_index = self.meta.get_task_index(task)
-        except (AttributeError, TypeError) as e:
-            # meta.tasks可能是None或未初始化，手动创建
-            print(f"[WARNING] meta.tasks not initialized, creating new tasks table. Error: {e}")
-            import pandas as pd
-            if not hasattr(self.meta, 'tasks') or self.meta.tasks is None:
-                self.meta.tasks = pd.DataFrame({'task': [], 'task_index': []})
-            # 添加新task
-            task_index = len(self.meta.tasks)
-            new_task = pd.DataFrame({'task': [task], 'task_index': [task_index]})
-            self.meta.tasks = pd.concat([self.meta.tasks, new_task], ignore_index=True)
+        # 使用我们自己的get_task_index方法（已覆盖父类）
+        task_index = self.get_task_index(task)
         
         # 移除'size'键（之前的pop操作移到这里，在验证之后）
         episode_buffer.pop("size")
