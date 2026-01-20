@@ -406,6 +406,33 @@ class AgiBotDataset(LeRobotDataset):
             local_files_only=local_files_only,
             video_backend=video_backend,
         )
+    
+    def create_episode_buffer(self):
+        """覆盖父类方法，确保返回的buffer包含必需的键"""
+        try:
+            # 尝试调用父类方法
+            buffer = super().create_episode_buffer()
+        except AttributeError:
+            # 如果父类没有这个方法，手动创建
+            buffer = {}
+        
+        # 确保有必需的键
+        if "size" not in buffer:
+            buffer["size"] = 0
+        if "episode_index" not in buffer:
+            buffer["episode_index"] = self.meta.total_episodes
+        if "frame_index" not in buffer:
+            buffer["frame_index"] = []
+        if "timestamp" not in buffer:
+            buffer["timestamp"] = []
+        
+        # 为features中的每个键创建空列表
+        for key in self.features:
+            if key not in buffer and key not in ["index", "episode_index", "task_index"]:
+                buffer[key] = []
+        
+        return buffer
+
 
     def save_episode(
         self, task: str, episode_data: dict | None = None, videos: dict | None = None
@@ -415,6 +442,12 @@ class AgiBotDataset(LeRobotDataset):
         """
         if not episode_data:
             episode_buffer = self.episode_buffer
+        
+        # 防御性检查：确保episode_buffer有'size'键
+        if "size" not in episode_buffer:
+            raise RuntimeError(
+                f"episode_buffer missing 'size' key. Keys present: {list(episode_buffer.keys())}"
+            )
 
         episode_length = episode_buffer.pop("size")
         episode_index = episode_buffer["episode_index"]
