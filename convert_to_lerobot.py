@@ -691,31 +691,62 @@ class AgiBotDataset(LeRobotDataset):
                     else:
                         self.meta.save_episode(episode_index, episode_length, task, task_index)
                 except Exception as save_exc:
-                    # If appending metadata fails due to parquet schema/order mismatch or
-                    # other writer issues, attempt a best-effort fallback: locate an
-                    # existing episodes parquet file and append a minimal row with the
-                    # same schema using pyarrow. If this also fails, re-raise the
-                    # original exception so the caller can handle it.
+                    # If we hit the earlier observed AttributeError where stats turned into
+                    # an int ("'int' object has no attribute 'items'"), attempt a retry
+                    # after resetting meta.stats to an empty dict. This works around
+                    # intermittent corruption of the aggregated stats variable.
+                    msg = str(save_exc)
+                    if isinstance(save_exc, AttributeError) and "object has no attribute 'items'" in msg:
+                        try:
+                            print(f"[WARNING] Detected stats serialization AttributeError: {msg}. Resetting meta.stats and retrying meta.save_episode...")
+                            self.meta.stats = {}
+                            if 'episode_metadata' in params:
+                                self.meta.save_episode(
+                                    episode_index,
+                                    episode_length,
+                                    task,
+                                    task_index,
+                                    episode_metadata={}
+                                )
+                            else:
+                                self.meta.save_episode(episode_index, episode_length, task, task_index)
+                            # retry succeeded
+                        except Exception as retry_exc:
+                            print(f"[ERROR] Retry after resetting meta.stats failed: {type(retry_exc).__name__}: {retry_exc}")
+                            # fall through to parquet fallback below
+                    # If retry didn't run or failed, attempt parquet fallback append/create
                     try:
                         import pyarrow as pa
                         import pyarrow.parquet as pq
                         import json
                         from pathlib import Path
 
-                        print(f"[WARNING] meta.save_episode failed: {type(save_exc).__name__}: {save_exc}. Attempting parquet fallback append...")
+                        print(f"[WARNING] meta.save_episode failed: {type(save_exc).__name__}: {save_exc}. Attempting parquet fallback append/create...")
 
                         # Find an existing parquet file under meta/episodes
                         meta_episodes_dir = Path(self.root) / "meta" / "episodes"
                         parquet_files = list(meta_episodes_dir.rglob("*.parquet"))
                         if len(parquet_files) == 0:
-                            raise RuntimeError("No existing meta episodes parquet found for fallback append")
-
-                        target_parquet = parquet_files[0]
-                        existing_table = pq.read_table(target_parquet)
-                        schema = existing_table.schema
+                            # No existing file: create target path and write a new parquet file
+                            meta_episodes_dir.mkdir(parents=True, exist_ok=True)
+                            target_parquet = meta_episodes_dir / "file-000.parquet"
+                            schema = None
+                        else:
+                            target_parquet = parquet_files[0]
+                            existing_table = pq.read_table(target_parquet)
+                            schema = existing_table.schema
 
                         arrays = []
                         names = []
+                        if schema is None:
+                            # Construct a minimal schema if none exists
+                            schema = pa.schema([
+                                pa.field('episode_index', pa.int64()),
+                                pa.field('tasks', pa.string()),
+                                pa.field('length', pa.int64()),
+                                pa.field('stats', pa.string()),
+                            ])
+
                         for field in schema:
                             name = field.name
                             ftype = field.type
@@ -731,12 +762,16 @@ class AgiBotDataset(LeRobotDataset):
                             elif name == "dataset_to_index":
                                 arrays.append(pa.array([int(self.meta.total_frames + episode_length - 1)], type=pa.int64()))
                             elif name == "stats":
-                                # If the existing file expects an int, feed a 0; otherwise use nulls
+                                # Provide a safe default representation for stats
                                 try:
                                     if pa.types.is_integer(ftype):
                                         arrays.append(pa.array([0], type=ftype))
                                     else:
-                                        arrays.append(pa.array([None], type=ftype))
+                                        # store an empty json string if stats slot expects string
+                                        if pa.types.is_string(ftype):
+                                            arrays.append(pa.array([json.dumps({})], type=ftype))
+                                        else:
+                                            arrays.append(pa.array([None], type=ftype))
                                 except Exception:
                                     arrays.append(pa.array([None], type=ftype))
                             elif name.endswith("chunk_index") or name.endswith("file_index"):
@@ -748,20 +783,19 @@ class AgiBotDataset(LeRobotDataset):
 
                         new_table = pa.Table.from_arrays(arrays, names=names)
 
-                        # Append to the parquet file (best-effort). Use pyarrow.parquet.write_table
-                        # with append=True to avoid overwriting the existing file.
-                        try:
-                            pq.write_table(new_table, target_parquet, append=True)
-                        except TypeError:
-                            # Older pyarrow versions may not support append arg; fall back to
-                            # using ParquetWriter in append mode by reading the existing file
-                            # metadata and writing a new file (best-effort).
-                            with pq.ParquetWriter(target_parquet, schema) as pw:
-                                pw.write_table(new_table)
+                        # If target file exists, attempt append; otherwise create new file
+                        if target_parquet.exists():
+                            try:
+                                pq.write_table(new_table, target_parquet, append=True)
+                            except TypeError:
+                                with pq.ParquetWriter(target_parquet, schema) as pw:
+                                    pw.write_table(new_table)
+                        else:
+                            pq.write_table(new_table, target_parquet)
 
-                        print(f"[INFO] Parquet fallback append succeeded to {target_parquet}")
+                        print(f"[INFO] Parquet fallback write succeeded to {target_parquet}")
                     except Exception as fallback_exc:
-                        print(f"[ERROR] Parquet fallback append failed: {type(fallback_exc).__name__}: {fallback_exc}")
+                        print(f"[ERROR] Parquet fallback write failed: {type(fallback_exc).__name__}: {fallback_exc}")
                         raise save_exc
             finally:
                 # Restore original writer.write_table if we wrapped it, then restore serialize
