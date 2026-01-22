@@ -659,17 +659,19 @@ class DistributedTaskCoordinator:
     - Providing atomic status file updates
     """
     
-    def __init__(self, lock_dir: Path, status_file: Path, logger: logging.Logger):
+    def __init__(self, lock_dir: Path, status_file: Path, output_path: Path, logger: logging.Logger):
         """
         Initialize the distributed task coordinator.
         
         Args:
             lock_dir: Directory for lock files
             status_file: Path to status JSON file
+            output_path: Base output path for task directories
             logger: Logger instance for logging
         """
         self.lock_dir = lock_dir
         self.status_file = status_file
+        self.output_path = output_path
         self.logger = logger
         
         # Create lock directory if it doesn't exist
@@ -760,35 +762,18 @@ class DistributedTaskCoordinator:
     
     def is_task_completed(self, task_id: int) -> bool:
         """
-        Check if a task has been completed.
+        Check if a task has been completed by checking if its output directory exists.
+        
+        This is simpler and more reliable than checking status files.
         
         Args:
             task_id: Task ID to check
         
         Returns:
-            bool: True if task is completed, False otherwise
+            bool: True if task directory exists, False otherwise
         """
-        try:
-            with open(self.status_file, 'r') as f:
-                # Acquire shared lock for reading
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                
-                try:
-                    status_data = json.load(f)
-                    
-                    task_key = str(task_id)
-                    if task_key in status_data:
-                        return status_data[task_key].get('completed', False)
-                    
-                    return False
-                
-                finally:
-                    # Release lock
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        
-        except Exception as e:
-            self.logger.error(f"Error checking completion status for task {task_id}: {e}")
-            return False
+        task_output_dir = self.output_path / f"task_{task_id}"
+        return task_output_dir.exists()
     
     def mark_task_completed(
         self,
@@ -799,6 +784,9 @@ class DistributedTaskCoordinator:
     ) -> None:
         """
         Mark a task as completed using atomic JSON update with file locking.
+        
+        Note: The primary completion indicator is the task directory existence.
+        This status file is mainly for logging and monitoring purposes.
         
         Args:
             task_id: Task ID to mark as completed
@@ -833,10 +821,6 @@ class DistributedTaskCoordinator:
                         f.seek(0)
                         f.truncate()
                         json.dump(status_data, f, indent=2)
-                        
-                        # Force flush to disk (critical for NFS and distributed systems)
-                        f.flush()
-                        os.fsync(f.fileno())
                         
                         self.logger.info(
                             f"✓ Marked task {task_id} as completed "
@@ -897,9 +881,8 @@ class DistributedTaskCoordinator:
         """
         Get list of tasks that are available for processing (not completed and not locked).
         
-        This method performs strict checks to prevent race conditions:
-        1. Check if task is completed (with file locking)
-        2. Check if task is currently locked
+        A task is considered completed if its output directory exists.
+        This is simpler and more reliable than checking status files.
         
         Args:
             all_tasks: List of all task IDs in the dataset
@@ -908,24 +891,28 @@ class DistributedTaskCoordinator:
             List[int]: List of available task IDs
         """
         available_tasks = []
+        completed_count = 0
+        locked_count = 0
         
         for task_id in all_tasks:
-            # Skip if already completed (uses shared lock for safe reading)
-            if self.is_task_completed(task_id):
-                self.logger.debug(f"Task {task_id} already completed, skipping")
+            # Check if task directory exists (definitive completion check)
+            task_output_dir = self.output_path / f"task_{task_id}"
+            if task_output_dir.exists():
+                self.logger.debug(f"Task {task_id} directory exists, skipping")
+                completed_count += 1
                 continue
             
             # Skip if currently locked
             if self.is_task_locked(task_id):
                 self.logger.debug(f"Task {task_id} is locked, skipping")
+                locked_count += 1
                 continue
             
             available_tasks.append(task_id)
         
         self.logger.info(
             f"Found {len(available_tasks)} available tasks out of {len(all_tasks)} total "
-            f"(completed: {len([t for t in all_tasks if self.is_task_completed(t)])}, "
-            f"locked: {len([t for t in all_tasks if self.is_task_locked(t)])})"
+            f"(completed: {completed_count}, locked: {locked_count})"
         )
         return available_tasks
 
@@ -2815,7 +2802,7 @@ class DistributedConverter:
         lock_dir = self.output_path / ".locks"
         status_file = self.output_path / ".status.json"
         self.coordinator = DistributedTaskCoordinator(
-            lock_dir, status_file, self.logger
+            lock_dir, status_file, self.output_path, self.logger
         )
         
         # Task processor (no longer needs writer)
@@ -2963,14 +2950,16 @@ class DistributedConverter:
             
             for task_id in available_tasks:
                 if self.coordinator.acquire_task_lock(task_id, self.node_id):
-                    # Double-check: verify task is still not completed after acquiring lock
-                    # This prevents race condition where task was marked complete between
-                    # get_available_tasks() and acquire_task_lock()
-                    if self.coordinator.is_task_completed(task_id):
-                        self.logger.warning(
-                            f"Task {task_id} was marked completed after lock acquisition, releasing lock"
+                    # Check if task directory already exists (created by another node)
+                    # This is the definitive check - if directory exists, task is done
+                    task_output_dir = self.output_path / f"task_{task_id}"
+                    if task_output_dir.exists():
+                        self.logger.info(
+                            f"Task {task_id} directory already exists (processed by another node), skipping"
                         )
                         self.coordinator.release_task_lock(task_id)
+                        # Mark as completed in status file
+                        self.coordinator.mark_task_completed(task_id, "already_exists", 0)
                         continue
                     
                     task_acquired = True
