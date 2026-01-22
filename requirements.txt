@@ -1,7 +1,0 @@
-lerobot
-h5py
-torch
-numpy
-pillow
-tqdm
-einops
