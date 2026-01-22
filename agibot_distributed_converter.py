@@ -1447,6 +1447,7 @@ class LeRobotDatasetWriter:
     def __init__(
         self,
         output_path: Path,
+        task_id: int,
         repo_id: str,
         fps: int = 30,
         logger: logging.Logger = None
@@ -1455,12 +1456,15 @@ class LeRobotDatasetWriter:
         Initialize the LeRobot dataset writer.
         
         Args:
-            output_path: Path to output directory
+            output_path: Path to root output directory
+            task_id: Task ID for this dataset
             repo_id: LeRobot repository identifier
             fps: Frames per second for videos
             logger: Logger instance for logging
         """
-        self.output_path = output_path
+        # Create task-specific output directory
+        self.output_path = output_path / f"task_{task_id}"
+        self.task_id = task_id
         self.repo_id = repo_id
         self.fps = fps
         self.logger = logger or logging.getLogger(__name__)
@@ -1475,13 +1479,13 @@ class LeRobotDatasetWriter:
         self.state_dim_info = None
         self.action_dim_info = None
         
-        # Directory paths
-        self.data_dir = output_path / "data"
-        self.videos_dir = output_path / "videos"
-        self.images_dir = output_path / "images"
-        self.meta_dir = output_path / "meta"
+        # Directory paths (under task-specific directory)
+        self.data_dir = self.output_path / "data"
+        self.videos_dir = self.output_path / "videos"
+        self.images_dir = self.output_path / "images"
+        self.meta_dir = self.output_path / "meta"
         
-        self.logger.info(f"LeRobotDatasetWriter initialized: output_path={output_path}, repo_id={repo_id}")
+        self.logger.info(f"LeRobotDatasetWriter initialized: task_id={task_id}, output_path={self.output_path}, repo_id={repo_id}")
     
     def initialize_dataset(self, features: Dict = None) -> None:
         """
@@ -1852,7 +1856,7 @@ class LeRobotDatasetWriter:
             "robot_type": robot_type,
             "total_episodes": self.episode_count,
             "total_frames": self.total_frames,
-            "total_tasks": len(self.tasks_info),
+            "total_tasks": 1,  # Each task dataset contains only one task
             "total_videos": self.episode_count * len(camera_names),
             "total_chunks": (self.episode_count + 999) // 1000,  # Ceiling division
             "chunks_size": 1000,
@@ -1900,20 +1904,21 @@ class LeRobotDatasetWriter:
         Write meta/tasks.jsonl with task index information.
         
         Each line contains: {"task_index": int, "task": str}
+        For per-task datasets, this file contains only one entry (the current task).
         """
         self.logger.info("Writing meta/tasks.jsonl...")
         
         tasks_file = self.meta_dir / "tasks.jsonl"
         
         with open(tasks_file, 'w') as f:
-            for task_id, task_info in sorted(self.tasks_info.items()):
-                task_entry = {
-                    "task_index": task_info["task_index"],
-                    "task": str(task_id)
-                }
-                f.write(json.dumps(task_entry) + '\n')
+            # Write only the current task with task_index = 0
+            task_entry = {
+                "task_index": 0,  # Always 0 for per-task datasets
+                "task": str(self.task_id)
+            }
+            f.write(json.dumps(task_entry) + '\n')
         
-        self.logger.info(f"✓ Wrote meta/tasks.jsonl ({len(self.tasks_info)} tasks)")
+        self.logger.info(f"✓ Wrote meta/tasks.jsonl (task {self.task_id})")
     
     def finalize_dataset(self) -> None:
         """
@@ -1996,7 +2001,6 @@ class TaskProcessor:
     def __init__(
         self,
         data_reader: AgibotDataReader,
-        writer: LeRobotDatasetWriter,
         max_workers: int,
         logger: logging.Logger
     ):
@@ -2005,12 +2009,10 @@ class TaskProcessor:
         
         Args:
             data_reader: AgibotDataReader instance for reading source data
-            writer: LeRobotDatasetWriter instance for writing output
             max_workers: Maximum number of parallel workers for episode processing
             logger: Logger instance for logging
         """
         self.data_reader = data_reader
-        self.writer = writer
         self.max_workers = max_workers
         self.logger = logger
         
@@ -2021,7 +2023,7 @@ class TaskProcessor:
         self._episode_locks = {}
         self._lock_mutex = __import__('threading').Lock()
     
-    def _check_episode_exists(self, episode_index: int, chunk_size: int = 1000) -> bool:
+    def _check_episode_exists(self, writer: LeRobotDatasetWriter, episode_index: int, chunk_size: int = 1000) -> bool:
         """
         Check if an episode output already exists and is complete.
         
@@ -2029,7 +2031,8 @@ class TaskProcessor:
         for the given episode.
         
         Args:
-            episode_index: Global episode index to check
+            writer: LeRobotDatasetWriter instance to check
+            episode_index: Episode index to check (0-based within task)
             chunk_size: Number of episodes per chunk directory
         
         Returns:
@@ -2040,7 +2043,7 @@ class TaskProcessor:
         chunk_name = f"chunk-{chunk_num:03d}"
         
         # Check Parquet file
-        data_chunk_dir = self.writer.data_dir / chunk_name
+        data_chunk_dir = writer.data_dir / chunk_name
         parquet_file = data_chunk_dir / f"episode_{episode_index:06d}.parquet"
         
         if not parquet_file.exists():
@@ -2048,7 +2051,7 @@ class TaskProcessor:
             return False
         
         # Check video files (at least one camera should exist)
-        videos_chunk_dir = self.writer.videos_dir / chunk_name
+        videos_chunk_dir = writer.videos_dir / chunk_name
         if not videos_chunk_dir.exists():
             self.logger.debug(f"Episode {episode_index}: Videos directory not found")
             return False
@@ -2069,22 +2072,22 @@ class TaskProcessor:
         self.logger.debug(f"Episode {episode_index}: Output exists and is complete")
         return True
     
-    def _process_episode_parallel(
+    def _process_episode_parallel_with_writer(
         self,
         task_id: int,
         episode_ids: List[int],
         task_name: str,
-        start_episode_index: int,
+        writer: LeRobotDatasetWriter,
         max_episodes: Optional[int] = None
     ) -> Dict[str, int]:
         """
-        Process episodes in parallel using ThreadPoolExecutor.
+        Process episodes in parallel using ThreadPoolExecutor with a specific writer.
         
         Args:
             task_id: Task ID being processed
             episode_ids: List of episode IDs to process
             task_name: Human-readable task name
-            start_episode_index: Starting global episode index
+            writer: LeRobotDatasetWriter instance for this task
             max_episodes: Maximum number of episodes to process (None for all)
         
         Returns:
@@ -2120,7 +2123,7 @@ class TaskProcessor:
                 
                 try:
                     # Check if episode already exists
-                    if self._check_episode_exists(episode_index):
+                    if self._check_episode_exists(writer, episode_index):
                         self.logger.info(f"Episode {episode_id} already exists, skipping")
                         return ('skipped', episode_id, None)
                     
@@ -2131,7 +2134,7 @@ class TaskProcessor:
                     )
                     
                     # Write episode
-                    self.writer.write_episode(episode_data, episode_index)
+                    writer.write_episode(episode_data, episode_index)
                     
                     self.logger.info(f"✓ Episode {episode_id} processed successfully")
                     return ('processed', episode_id, None)
@@ -2170,10 +2173,10 @@ class TaskProcessor:
         
         # Process episodes in parallel
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all episodes
+            # Submit all episodes (episode_index starts from 0)
             futures = {}
             for i, episode_id in enumerate(episode_ids):
-                episode_index = start_episode_index + i
+                episode_index = i  # 0-based index within this task
                 future = executor.submit(process_single_episode, episode_id, episode_index)
                 futures[future] = episode_id
             
@@ -2196,30 +2199,49 @@ class TaskProcessor:
     def process_task(
         self,
         task_id: int,
-        start_episode_index: int,
+        output_path: Path,
+        repo_id: str,
+        fps: int = 30,
         max_episodes: Optional[int] = None
     ) -> TaskResult:
         """
         Process a complete task by converting all its episodes.
         
         This method:
-        1. Gets all episode IDs for the task
-        2. Processes episodes in parallel
-        3. Handles errors gracefully (continues with other episodes)
-        4. Returns aggregated results
-        5. Closes H5 file handles after processing
+        1. Creates a task-specific LeRobotDatasetWriter
+        2. Initializes the task output directory
+        3. Gets all episode IDs for the task
+        4. Processes episodes in parallel (episode_index starts from 0)
+        5. Writes task metadata
+        6. Handles errors gracefully (continues with other episodes)
+        7. Returns aggregated results
+        8. Closes H5 file handles after processing
         
         Args:
             task_id: Task ID to process
-            start_episode_index: Starting global episode index for this task
+            output_path: Root output path (task subdirectory will be created)
+            repo_id: LeRobot repository identifier
+            fps: Frames per second for videos
             max_episodes: Maximum number of episodes to process (None for all)
         
         Returns:
             TaskResult: Aggregated results for the task
         """
-        self.logger.info(f"Processing task {task_id} starting at episode index {start_episode_index}")
+        self.logger.info(f"Processing task {task_id}")
         
         try:
+            # Create task-specific writer
+            task_writer = LeRobotDatasetWriter(
+                output_path=output_path,
+                task_id=task_id,
+                repo_id=repo_id,
+                fps=fps,
+                logger=self.logger
+            )
+            
+            # Initialize task dataset
+            task_writer.initialize_dataset()
+            
             # Get task info
             task_info = self.data_reader.get_task_info(task_id)
             task_name = ""
@@ -2248,14 +2270,22 @@ class TaskProcessor:
                 f"processing {limited_episodes} episodes"
             )
             
-            # Process episodes in parallel
-            results = self._process_episode_parallel(
+            # Process episodes in parallel (episode_index starts from 0 for each task)
+            results = self._process_episode_parallel_with_writer(
                 task_id,
                 episode_ids,
                 task_name,
-                start_episode_index,
+                task_writer,
                 max_episodes
             )
+            
+            # Write task metadata
+            if results['processed'] > 0:
+                self.logger.info(f"Writing metadata for task {task_id}...")
+                task_writer.write_meta_info()
+                task_writer.write_meta_episodes()
+                task_writer.write_meta_tasks()
+                task_writer.finalize_dataset()
             
             # Determine success
             success = results['failed'] == 0
@@ -2290,7 +2320,6 @@ class TaskProcessor:
             # Log error with context
             error_context = {
                 "task_id": task_id,
-                "start_episode_index": start_episode_index,
                 "max_episodes": max_episodes,
                 "error_type": getattr(e, 'error_type', 'unknown')
             }
@@ -2712,7 +2741,6 @@ class DistributedConverter:
         # Components (initialized in _initialize_components)
         self.data_reader: Optional[AgibotDataReader] = None
         self.coordinator: Optional[DistributedTaskCoordinator] = None
-        self.writer: Optional[LeRobotDatasetWriter] = None
         self.processor: Optional[TaskProcessor] = None
         
         # Track acquired locks for cleanup
@@ -2770,21 +2798,9 @@ class DistributedConverter:
             lock_dir, status_file, self.logger
         )
         
-        # Dataset writer
-        self.writer = LeRobotDatasetWriter(
-            self.output_path,
-            self.repo_id,
-            fps=30,
-            logger=self.logger
-        )
-        
-        # Initialize dataset structure
-        self.writer.initialize_dataset()
-        
-        # Task processor
+        # Task processor (no longer needs writer)
         self.processor = TaskProcessor(
             self.data_reader,
-            self.writer,
             self.max_workers,
             self.logger
         )
@@ -2847,15 +2863,8 @@ class DistributedConverter:
             # Step 2: Initialize components
             self._initialize_components()
             
-            # Step 3: Run main conversion loop (to be implemented in subtask 7.5)
+            # Step 3: Run main conversion loop
             self._run_conversion_loop()
-            
-            # Step 4: Finalize dataset
-            self.logger.info("Finalizing dataset...")
-            self.writer.write_meta_info()
-            self.writer.write_meta_episodes()
-            self.writer.write_meta_tasks()
-            self.writer.finalize_dataset()
             
             self.logger.info("=" * 80)
             self.logger.info("Distributed Agibot Converter Completed Successfully")
@@ -2894,9 +2903,6 @@ class DistributedConverter:
         if self.max_tasks is not None:
             all_tasks = all_tasks[:self.max_tasks]
             self.logger.info(f"Test mode: limiting to {len(all_tasks)} tasks out of {total_tasks}")
-        
-        # Track global episode index
-        global_episode_index = 0
         
         # Track statistics
         tasks_processed = 0
@@ -2963,20 +2969,17 @@ class DistributedConverter:
                 # Check memory before processing task
                 self.memory_monitor.check_memory(f"Before processing task {current_task_id}")
                 
-                # Process task with episode limit if specified
+                # Process task (each task creates its own writer and starts episode_index from 0)
                 task_result = self.processor.process_task(
                     current_task_id,
-                    global_episode_index,
-                    self.max_episodes
+                    self.output_path,
+                    self.repo_id,
+                    fps=30,
+                    max_episodes=self.max_episodes
                 )
                 
                 # Check memory after processing task
                 self.memory_monitor.check_memory(f"After processing task {current_task_id}")
-                
-                # Update global episode index
-                global_episode_index += (
-                    task_result.episodes_processed + task_result.episodes_skipped
-                )
                 
                 # Update statistics
                 if task_result.success:
@@ -3016,7 +3019,6 @@ class DistributedConverter:
                 # Log error with context
                 error_context = {
                     "task_id": current_task_id,
-                    "global_episode_index": global_episode_index,
                     "tasks_processed": tasks_processed,
                     "tasks_failed": tasks_failed
                 }
@@ -3048,7 +3050,6 @@ class DistributedConverter:
         self.logger.info(f"Total episodes processed: {total_episodes_processed}")
         self.logger.info(f"Total episodes skipped: {total_episodes_skipped}")
         self.logger.info(f"Total episodes failed: {total_episodes_failed}")
-        self.logger.info(f"Total episodes: {global_episode_index}")
         self.logger.info(f"Peak memory usage: {peak_memory_mb:.1f} MB")
         self.logger.info("=" * 80)
 
