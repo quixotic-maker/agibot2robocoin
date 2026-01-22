@@ -770,13 +770,21 @@ class DistributedTaskCoordinator:
         """
         try:
             with open(self.status_file, 'r') as f:
-                status_data = json.load(f)
-            
-            task_key = str(task_id)
-            if task_key in status_data:
-                return status_data[task_key].get('completed', False)
-            
-            return False
+                # Acquire shared lock for reading
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                
+                try:
+                    status_data = json.load(f)
+                    
+                    task_key = str(task_id)
+                    if task_key in status_data:
+                        return status_data[task_key].get('completed', False)
+                    
+                    return False
+                
+                finally:
+                    # Release lock
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         
         except Exception as e:
             self.logger.error(f"Error checking completion status for task {task_id}: {e}")
@@ -825,6 +833,10 @@ class DistributedTaskCoordinator:
                         f.seek(0)
                         f.truncate()
                         json.dump(status_data, f, indent=2)
+                        
+                        # Force flush to disk (critical for NFS and distributed systems)
+                        f.flush()
+                        os.fsync(f.fileno())
                         
                         self.logger.info(
                             f"✓ Marked task {task_id} as completed "
@@ -885,6 +897,10 @@ class DistributedTaskCoordinator:
         """
         Get list of tasks that are available for processing (not completed and not locked).
         
+        This method performs strict checks to prevent race conditions:
+        1. Check if task is completed (with file locking)
+        2. Check if task is currently locked
+        
         Args:
             all_tasks: List of all task IDs in the dataset
         
@@ -894,7 +910,7 @@ class DistributedTaskCoordinator:
         available_tasks = []
         
         for task_id in all_tasks:
-            # Skip if already completed
+            # Skip if already completed (uses shared lock for safe reading)
             if self.is_task_completed(task_id):
                 self.logger.debug(f"Task {task_id} already completed, skipping")
                 continue
@@ -906,7 +922,11 @@ class DistributedTaskCoordinator:
             
             available_tasks.append(task_id)
         
-        self.logger.info(f"Found {len(available_tasks)} available tasks out of {len(all_tasks)} total")
+        self.logger.info(
+            f"Found {len(available_tasks)} available tasks out of {len(all_tasks)} total "
+            f"(completed: {len([t for t in all_tasks if self.is_task_completed(t)])}, "
+            f"locked: {len([t for t in all_tasks if self.is_task_locked(t)])})"
+        )
         return available_tasks
 
 
@@ -2943,6 +2963,16 @@ class DistributedConverter:
             
             for task_id in available_tasks:
                 if self.coordinator.acquire_task_lock(task_id, self.node_id):
+                    # Double-check: verify task is still not completed after acquiring lock
+                    # This prevents race condition where task was marked complete between
+                    # get_available_tasks() and acquire_task_lock()
+                    if self.coordinator.is_task_completed(task_id):
+                        self.logger.warning(
+                            f"Task {task_id} was marked completed after lock acquisition, releasing lock"
+                        )
+                        self.coordinator.release_task_lock(task_id)
+                        continue
+                    
                     task_acquired = True
                     current_task_id = task_id
                     self._acquired_locks.append(task_id)
