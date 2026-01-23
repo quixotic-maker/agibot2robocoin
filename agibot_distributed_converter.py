@@ -1499,6 +1499,9 @@ class LeRobotDatasetWriter:
         self.episode_count = 0
         self.total_frames = 0
         
+        # Track failed episodes for error reporting
+        self.failed_episodes = []  # List of {episode_id, episode_index, task_id, error_message}
+        
         # Track dimension info from first episode
         self.state_dim_info = None
         self.action_dim_info = None
@@ -2012,7 +2015,17 @@ class LeRobotDatasetWriter:
             source_mapping[episode_info["episode_index"]] = {
                 "task_id": episode_info["task_id"],
                 "episode_id": episode_info["episode_id"],
-                "task_name": episode_info["task_name"]
+                "task_name": episode_info["task_name"],
+                "status": "success"
+            }
+        
+        # Add failed episodes
+        for failed_info in self.failed_episodes:
+            source_mapping[f"failed_{failed_info['episode_id']}"] = {
+                "task_id": failed_info["task_id"],
+                "episode_id": failed_info["episode_id"],
+                "status": "failed",
+                "error_message": failed_info["error_message"]
             }
         
         mapping_file = self.output_path / "episode_source_mapping.json"
@@ -2121,6 +2134,65 @@ class TaskProcessor:
         self.logger.debug(f"Episode {episode_index}: Output exists and is complete")
         return True
     
+    def _cleanup_partial_episode(
+        self,
+        writer: LeRobotDatasetWriter,
+        episode_index: int,
+        episode_id: int,
+        chunk_size: int = 1000
+    ) -> None:
+        """
+        Clean up partial data for a failed episode.
+        
+        This method removes:
+        - Parquet file
+        - All video files for this episode
+        
+        Args:
+            writer: LeRobotDatasetWriter instance
+            episode_index: Episode index (0-based within task)
+            episode_id: Original episode ID from source data
+            chunk_size: Number of episodes per chunk directory
+        """
+        self.logger.info(f"Cleaning up partial data for episode {episode_id} (index {episode_index})")
+        
+        # Determine chunk number
+        chunk_num = episode_index // chunk_size
+        chunk_name = f"chunk-{chunk_num:03d}"
+        
+        files_removed = 0
+        
+        # Remove Parquet file
+        data_chunk_dir = writer.data_dir / chunk_name
+        parquet_file = data_chunk_dir / f"episode_{episode_index:06d}.parquet"
+        
+        if parquet_file.exists():
+            try:
+                parquet_file.unlink()
+                files_removed += 1
+                self.logger.debug(f"Removed Parquet file: {parquet_file}")
+            except Exception as e:
+                self.logger.warning(f"Failed to remove Parquet file {parquet_file}: {e}")
+        
+        # Remove video files
+        videos_chunk_dir = writer.videos_dir / chunk_name
+        if videos_chunk_dir.exists():
+            for camera_dir in videos_chunk_dir.iterdir():
+                if camera_dir.is_dir():
+                    video_file = camera_dir / f"episode_{episode_index:06d}.mp4"
+                    if video_file.exists():
+                        try:
+                            video_file.unlink()
+                            files_removed += 1
+                            self.logger.debug(f"Removed video file: {video_file}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to remove video file {video_file}: {e}")
+        
+        if files_removed > 0:
+            self.logger.info(f"✓ Cleaned up {files_removed} file(s) for episode {episode_id}")
+        else:
+            self.logger.debug(f"No partial files found for episode {episode_id}")
+    
     def _process_episode_parallel_with_writer(
         self,
         task_id: int,
@@ -2218,6 +2290,13 @@ class TaskProcessor:
                     f"{error_msg} | Context: {error_context}",
                     exc_info=True
                 )
+                
+                # Clean up partial data for this episode
+                try:
+                    self._cleanup_partial_episode(writer, episode_index, episode_id)
+                except Exception as cleanup_error:
+                    self.logger.error(f"Failed to cleanup partial data for episode {episode_id}: {cleanup_error}")
+                
                 return ('failed', episode_id, error_msg)
         
         # Process episodes in parallel
@@ -2238,6 +2317,13 @@ class TaskProcessor:
                     
                     if status == 'failed' and error_msg:
                         self.logger.error(f"Episode {episode_id} failed: {error_msg}")
+                        
+                        # Record failed episode in writer
+                        writer.failed_episodes.append({
+                            "episode_id": episode_id,
+                            "task_id": task_id,
+                            "error_message": error_msg
+                        })
                 
                 except Exception as e:
                     self.logger.error(f"Unexpected error processing episode {episode_id}: {e}")
