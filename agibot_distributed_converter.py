@@ -545,9 +545,14 @@ class AgibotDataReader:
                 'state/joint/position': 'state_joint_position',
                 'state/end/position': 'state_end_position',
                 'state/head/position': 'state_head_position',
+                'state/effector/position': 'state_effector_position',
+                'state/waist/position': 'state_waist_position',
                 'action/joint/position': 'action_joint_position',
                 'action/end/position': 'action_end_position',
                 'action/head/position': 'action_head_position',
+                'action/effector/position': 'action_effector_position',
+                'action/waist/position': 'action_waist_position',
+                'action/robot/velocity': 'action_robot_velocity',
                 'timestamp': 'timestamp',
             }
             
@@ -1198,6 +1203,8 @@ class EpisodeConverter:
         state_joint = proprio_data['state_joint_position']
         state_end = proprio_data['state_end_position']
         state_head = proprio_data['state_head_position']
+        state_effector = proprio_data['state_effector_position']
+        state_waist = proprio_data['state_waist_position']
         
         # Flatten 3D arrays to 2D (N, features)
         # state_end might be (N, 2, 3) for dual arms -> flatten to (N, 6)
@@ -1208,15 +1215,18 @@ class EpisodeConverter:
         dim_info = {
             'joint_dim': state_joint.shape[1],
             'end_dim': state_end.shape[1],
-            'head_dim': state_head.shape[1]
+            'head_dim': state_head.shape[1],
+            'effector_dim': state_effector.shape[1],
+            'waist_dim': state_waist.shape[1]
         }
         
         # Concatenate along feature dimension
-        states = np.concatenate([state_joint, state_end, state_head], axis=1)
+        states = np.concatenate([state_joint, state_end, state_head, state_effector, state_waist], axis=1)
         
         self.logger.debug(
             f"Processed states: joint={state_joint.shape}, end={state_end.shape}, "
-            f"head={state_head.shape}, total={states.shape}"
+            f"head={state_head.shape}, effector={state_effector.shape}, waist={state_waist.shape}, "
+            f"total={states.shape}"
         )
         
         return states, dim_info
@@ -1235,6 +1245,9 @@ class EpisodeConverter:
         action_joint = proprio_data['action_joint_position']
         action_end = proprio_data['action_end_position']
         action_head = proprio_data['action_head_position']
+        action_effector = proprio_data['action_effector_position']
+        action_waist = proprio_data['action_waist_position']
+        action_robot_velocity = proprio_data['action_robot_velocity']
         
         # Flatten 3D arrays to 2D (N, features)
         # action_end might be (N, 2, 3) for dual arms -> flatten to (N, 6)
@@ -1245,15 +1258,19 @@ class EpisodeConverter:
         dim_info = {
             'joint_dim': action_joint.shape[1],
             'end_dim': action_end.shape[1],
-            'head_dim': action_head.shape[1]
+            'head_dim': action_head.shape[1],
+            'effector_dim': action_effector.shape[1],
+            'waist_dim': action_waist.shape[1],
+            'robot_velocity_dim': action_robot_velocity.shape[1]
         }
         
         # Concatenate along feature dimension
-        actions = np.concatenate([action_joint, action_end, action_head], axis=1)
+        actions = np.concatenate([action_joint, action_end, action_head, action_effector, action_waist, action_robot_velocity], axis=1)
         
         self.logger.debug(
             f"Processed actions: joint={action_joint.shape}, end={action_end.shape}, "
-            f"head={action_head.shape}, total={actions.shape}"
+            f"head={action_head.shape}, effector={action_effector.shape}, waist={action_waist.shape}, "
+            f"robot_velocity={action_robot_velocity.shape}, total={actions.shape}"
         )
         
         return actions, dim_info
@@ -1799,6 +1816,8 @@ class LeRobotDatasetWriter:
             joint_dim = self.state_dim_info['joint_dim']
             end_dim = self.state_dim_info['end_dim']
             head_dim = self.state_dim_info['head_dim']
+            effector_dim = self.state_dim_info.get('effector_dim', 0)
+            waist_dim = self.state_dim_info.get('waist_dim', 0)
             
             # Joint state names (1-indexed)
             for i in range(joint_dim):
@@ -1811,6 +1830,14 @@ class LeRobotDatasetWriter:
             # Head state names (1-indexed)
             for i in range(head_dim):
                 state_names.append(f"head_{i+1}")
+            
+            # Effector state names (1-indexed)
+            for i in range(effector_dim):
+                state_names.append(f"effector_{i+1}")
+            
+            # Waist state names (1-indexed)
+            for i in range(waist_dim):
+                state_names.append(f"waist_{i+1}")
         else:
             # Fallback to generic names if dimension info not available (1-indexed)
             state_names = [f"state_{i+1}" for i in range(state_dim)]
@@ -1819,6 +1846,9 @@ class LeRobotDatasetWriter:
             joint_dim = self.action_dim_info['joint_dim']
             end_dim = self.action_dim_info['end_dim']
             head_dim = self.action_dim_info['head_dim']
+            effector_dim = self.action_dim_info.get('effector_dim', 0)
+            waist_dim = self.action_dim_info.get('waist_dim', 0)
+            robot_velocity_dim = self.action_dim_info.get('robot_velocity_dim', 0)
             
             # Joint action names (1-indexed)
             for i in range(joint_dim):
@@ -1831,6 +1861,18 @@ class LeRobotDatasetWriter:
             # Head action names (1-indexed)
             for i in range(head_dim):
                 action_names.append(f"head_{i+1}")
+            
+            # Effector action names (1-indexed)
+            for i in range(effector_dim):
+                action_names.append(f"effector_{i+1}")
+            
+            # Waist action names (1-indexed)
+            for i in range(waist_dim):
+                action_names.append(f"waist_{i+1}")
+            
+            # Robot velocity action names (1-indexed)
+            for i in range(robot_velocity_dim):
+                action_names.append(f"robot_velocity_{i+1}")
         else:
             # Fallback to generic names if dimension info not available (1-indexed)
             action_names = [f"action_{i+1}" for i in range(action_dim)]
