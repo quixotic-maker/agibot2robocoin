@@ -519,9 +519,14 @@ class AgibotDataReader:
                 - 'state_joint_position': Joint state positions
                 - 'state_end_position': End effector state positions
                 - 'state_head_position': Head state positions
+                - 'state_effector_position': Effector state positions (optional, may be empty)
+                - 'state_waist_position': Waist state positions (optional, may be empty)
                 - 'action_joint_position': Joint action positions
                 - 'action_end_position': End effector action positions
                 - 'action_head_position': Head action positions
+                - 'action_effector_position': Effector action positions (optional, may be empty)
+                - 'action_waist_position': Waist action positions (optional, may be empty)
+                - 'action_robot_velocity': Robot velocity (optional, may be empty)
                 - 'timestamp': Timestamp data
         
         Raises:
@@ -540,43 +545,60 @@ class AgibotDataReader:
             # Try to reuse existing handle if available
             h5_file = self._get_h5_handle(proprio_path)
             
-            # Define required fields
+            # Define required fields (must exist)
             required_fields = {
                 'state/joint/position': 'state_joint_position',
                 'state/end/position': 'state_end_position',
                 'state/head/position': 'state_head_position',
-                'state/effector/position': 'state_effector_position',
-                'state/waist/position': 'state_waist_position',
                 'action/joint/position': 'action_joint_position',
                 'action/end/position': 'action_end_position',
                 'action/head/position': 'action_head_position',
-                'action/effector/position': 'action_effector_position',
-                'action/waist/position': 'action_waist_position',
-                'action/robot/velocity': 'action_robot_velocity',
                 'timestamp': 'timestamp',
             }
             
-            # Check for missing fields
-            missing_fields = []
+            # Define optional fields (may not exist in all datasets)
+            optional_fields = {
+                'state/effector/position': 'state_effector_position',
+                'state/waist/position': 'state_waist_position',
+                'action/effector/position': 'action_effector_position',
+                'action/waist/position': 'action_waist_position',
+                'action/robot/velocity': 'action_robot_velocity',
+            }
+            
+            # Check for missing required fields
+            missing_required = []
             for h5_path in required_fields.keys():
                 if h5_path not in h5_file:
-                    missing_fields.append(h5_path)
+                    missing_required.append(h5_path)
             
-            if missing_fields:
+            if missing_required:
                 raise DataFormatError(
-                    f"Missing required fields in {proprio_path}: {', '.join(missing_fields)}",
+                    f"Missing required fields in {proprio_path}: {', '.join(missing_required)}",
                     expected_format="H5 file with state/action/timestamp fields"
                 )
             
-            # Extract all data
+            # Extract required data
             data = {}
             for h5_path, key_name in required_fields.items():
                 data[key_name] = h5_file[h5_path][:]
             
+            # Get number of frames from timestamp
+            num_frames = data['timestamp'].shape[0]
+            
+            # Extract optional data (use empty arrays if not present)
+            for h5_path, key_name in optional_fields.items():
+                if h5_path in h5_file:
+                    data[key_name] = h5_file[h5_path][:]
+                    self.logger.debug(f"Found optional field {h5_path}: shape={data[key_name].shape}")
+                else:
+                    # Create empty array with correct shape (num_frames, 0)
+                    data[key_name] = np.empty((num_frames, 0), dtype=np.float32)
+                    self.logger.debug(f"Optional field {h5_path} not found, using empty array")
+            
             # Log data shapes for debugging
             self.logger.debug(
                 f"Loaded proprio stats for task {task_id}, episode {episode_id}: "
-                f"{data['timestamp'].shape[0]} frames"
+                f"{num_frames} frames"
             )
             
             return data
@@ -1196,6 +1218,8 @@ class EpisodeConverter:
         """
         Concatenate state arrays from proprio data.
         
+        Handles optional fields (effector, waist) which may have 0 dimensions.
+        
         Args:
             proprio_data: Dictionary containing state data arrays
         
@@ -1223,8 +1247,14 @@ class EpisodeConverter:
             'waist_dim': state_waist.shape[1]
         }
         
-        # Concatenate along feature dimension
-        states = np.concatenate([state_joint, state_end, state_head, state_effector, state_waist], axis=1)
+        # Concatenate along feature dimension (only include non-empty arrays)
+        state_components = [state_joint, state_end, state_head]
+        if state_effector.shape[1] > 0:
+            state_components.append(state_effector)
+        if state_waist.shape[1] > 0:
+            state_components.append(state_waist)
+        
+        states = np.concatenate(state_components, axis=1)
         
         self.logger.debug(
             f"Processed states: joint={state_joint.shape}, end={state_end.shape}, "
@@ -1237,6 +1267,8 @@ class EpisodeConverter:
     def _process_actions(self, proprio_data: Dict[str, np.ndarray]) -> tuple[np.ndarray, Dict[str, int]]:
         """
         Concatenate action arrays from proprio data.
+        
+        Handles optional fields (effector, waist, robot_velocity) which may have 0 dimensions.
         
         Args:
             proprio_data: Dictionary containing action data arrays
@@ -1267,8 +1299,16 @@ class EpisodeConverter:
             'robot_velocity_dim': action_robot_velocity.shape[1]
         }
         
-        # Concatenate along feature dimension
-        actions = np.concatenate([action_joint, action_end, action_head, action_effector, action_waist, action_robot_velocity], axis=1)
+        # Concatenate along feature dimension (only include non-empty arrays)
+        action_components = [action_joint, action_end, action_head]
+        if action_effector.shape[1] > 0:
+            action_components.append(action_effector)
+        if action_waist.shape[1] > 0:
+            action_components.append(action_waist)
+        if action_robot_velocity.shape[1] > 0:
+            action_components.append(action_robot_velocity)
+        
+        actions = np.concatenate(action_components, axis=1)
         
         self.logger.debug(
             f"Processed actions: joint={action_joint.shape}, end={action_end.shape}, "
