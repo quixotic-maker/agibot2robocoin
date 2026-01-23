@@ -1069,6 +1069,9 @@ class LazyVideoReader:
         """
         Read a specific frame from the video with caching for sequential access.
         
+        Note: This method uses seek which may not be frame-accurate for all videos.
+        For sequential access, iterate through decode() instead.
+        
         Args:
             frame_idx: Frame index to read
         
@@ -1613,7 +1616,12 @@ class LeRobotDatasetWriter:
         use_buffering: bool = True
     ) -> None:
         """
-        Write episode data to Parquet file with optional buffering.
+        Write episode data to Parquet file with nested array format.
+        
+        Format matches LeRobot standard:
+        - observation.state: column of arrays (one array per frame)
+        - action: column of arrays (one array per frame)
+        - timestamp, frame_index, episode_index, index, task_index: scalar columns
         
         Args:
             episode_data: Episode data to write
@@ -1638,20 +1646,23 @@ class LeRobotDatasetWriter:
         frame_indices = np.arange(num_frames, dtype=np.int64)
         episode_indices = np.full(num_frames, episode_index, dtype=np.int64)
         
-        # Build data dictionary
+        # Create global index (frame_index within episode)
+        indices = np.arange(num_frames, dtype=np.int64)
+        
+        # Task index (always 0 for per-task datasets)
+        task_indices = np.zeros(num_frames, dtype=np.int64)
+        
+        # Build data dictionary with nested arrays
+        # observation.state and action are stored as arrays (one per row)
         data_dict = {
+            "observation.state": list(episode_data.states.astype(np.float32)),  # List of arrays
+            "action": list(episode_data.actions.astype(np.float32)),  # List of arrays
+            "timestamp": episode_data.timestamps.astype(np.float32),
             "frame_index": frame_indices,
             "episode_index": episode_indices,
-            "timestamp": episode_data.timestamps.astype(np.float32),
+            "index": indices,
+            "task_index": task_indices
         }
-        
-        # Add state columns
-        for i in range(episode_data.states.shape[1]):
-            data_dict[f"observation.state.{i}"] = episode_data.states[:, i].astype(np.float32)
-        
-        # Add action columns
-        for i in range(episode_data.actions.shape[1]):
-            data_dict[f"action.{i}"] = episode_data.actions[:, i].astype(np.float32)
         
         # Create DataFrame
         df = pd.DataFrame(data_dict)
@@ -1711,50 +1722,53 @@ class LeRobotDatasetWriter:
             output_video = camera_dir / f"episode_{episode_index:06d}.mp4"
             
             try:
-                # Open video reader
-                video_reader.open()
+                # Open source video directly for sequential reading
+                source_container = av.open(str(video_reader.video_path))
+                source_stream = source_container.streams.video[0]
                 
                 # Create output container
                 output_container = av.open(str(output_video), mode='w')
                 
                 # Create video stream
                 stream = output_container.add_stream('h264', rate=self.fps)
-                stream.width = 640  # Default width, will be updated from first frame
-                stream.height = 480  # Default height, will be updated from first frame
+                stream.width = source_stream.width
+                stream.height = source_stream.height
                 stream.pix_fmt = 'yuv420p'
                 
-                # Read and encode frames in batches
-                frame_count = video_reader.get_frame_count()
-                first_frame = True
+                # Read and encode frames sequentially
+                frame_count = 0
                 frame_batch = []
                 
-                for frame_idx in range(frame_count):
-                    # Read frame
-                    frame_array = video_reader.read_frame(frame_idx)
-                    
-                    # Update stream dimensions from first frame
-                    if first_frame:
-                        stream.height, stream.width = frame_array.shape[:2]
-                        first_frame = False
-                    
-                    # Create video frame
-                    video_frame = av.VideoFrame.from_ndarray(frame_array, format='rgb24')
-                    frame_batch.append(video_frame)
-                    
-                    # Encode batch when it reaches batch_size or at the end
-                    if len(frame_batch) >= batch_size or frame_idx == frame_count - 1:
-                        for batch_frame in frame_batch:
-                            for packet in stream.encode(batch_frame):
-                                output_container.mux(packet)
-                        frame_batch.clear()
+                for packet in source_container.demux(source_stream):
+                    for frame in packet.decode():
+                        # Convert frame to numpy array and back to VideoFrame
+                        # This ensures consistent format
+                        frame_array = frame.to_ndarray(format='rgb24')
+                        video_frame = av.VideoFrame.from_ndarray(frame_array, format='rgb24')
+                        frame_batch.append(video_frame)
+                        frame_count += 1
+                        
+                        # Encode batch when it reaches batch_size
+                        if len(frame_batch) >= batch_size:
+                            for batch_frame in frame_batch:
+                                for pkt in stream.encode(batch_frame):
+                                    output_container.mux(pkt)
+                            frame_batch.clear()
+                
+                # Encode remaining frames in batch
+                if frame_batch:
+                    for batch_frame in frame_batch:
+                        for pkt in stream.encode(batch_frame):
+                            output_container.mux(pkt)
+                    frame_batch.clear()
                 
                 # Flush encoder
-                for packet in stream.encode():
-                    output_container.mux(packet)
+                for pkt in stream.encode():
+                    output_container.mux(pkt)
                 
                 # Close containers
                 output_container.close()
-                video_reader.close()
+                source_container.close()
                 
                 self.logger.debug(
                     f"Encoded video: {camera_name} -> {output_video.name} "
@@ -1796,13 +1810,13 @@ class LeRobotDatasetWriter:
                     import pandas as pd
                     df = pd.read_parquet(parquet_file)
                     
-                    # Count state columns
-                    state_cols = [col for col in df.columns if col.startswith("observation.state.")]
-                    state_dim = len(state_cols)
+                    # Get dimensions from nested arrays
+                    if 'observation.state' in df.columns:
+                        state_dim = len(df['observation.state'].iloc[0])
                     
-                    # Count action columns
-                    action_cols = [col for col in df.columns if col.startswith("action.")]
-                    action_dim = len(action_cols)
+                    if 'action' in df.columns:
+                        action_dim = len(df['action'].iloc[0])
+                        
                 except Exception as e:
                     self.logger.warning(f"Could not read parquet file for dimensions: {e}")
             
