@@ -1876,23 +1876,62 @@ class LeRobotDatasetWriter:
             effector_dim = self.state_dim_info.get('effector_dim', 0)
             waist_dim = self.state_dim_info.get('waist_dim', 0)
             
-            # Joint state names (1-indexed)
-            for i in range(joint_dim):
-                state_names.append(f"joint_{i+1}")
+            # Joint state names - distinguish left/right arms
+            # Assume joints are ordered: left arm first, then right arm
+            if joint_dim == 14:
+                # Dual-arm robot: 7 joints per arm
+                for i in range(7):
+                    state_names.append(f"left_arm_joint_{i+1}")
+                for i in range(7):
+                    state_names.append(f"right_arm_joint_{i+1}")
+            elif joint_dim % 2 == 0:
+                # Even number of joints: split into left/right
+                half = joint_dim // 2
+                for i in range(half):
+                    state_names.append(f"left_arm_joint_{i+1}")
+                for i in range(half):
+                    state_names.append(f"right_arm_joint_{i+1}")
+            else:
+                # Odd number or unknown: use generic names
+                for i in range(joint_dim):
+                    state_names.append(f"joint_{i+1}")
             
-            # End effector state names (1-indexed)
-            for i in range(end_dim):
-                state_names.append(f"end_effector_{i+1}")
+            # End effector state names - distinguish left/right
+            # end_dim is typically 6 (2 end effectors × 3 coordinates each)
+            if end_dim == 6:
+                # Left end effector (x, y, z)
+                state_names.extend(["left_end_effector_x", "left_end_effector_y", "left_end_effector_z"])
+                # Right end effector (x, y, z)
+                state_names.extend(["right_end_effector_x", "right_end_effector_y", "right_end_effector_z"])
+            else:
+                # Generic names if dimension doesn't match expected
+                for i in range(end_dim):
+                    state_names.append(f"end_effector_{i+1}")
             
-            # Head state names (1-indexed)
+            # Head state names - use generic names (no left/right distinction)
             for i in range(head_dim):
                 state_names.append(f"head_{i+1}")
             
-            # Effector state names (1-indexed)
-            for i in range(effector_dim):
-                state_names.append(f"effector_{i+1}")
+            # Effector state names - distinguish left/right if even number
+            if effector_dim == 12:
+                # 12 dimensions: 6 per effector
+                for i in range(6):
+                    state_names.append(f"left_effector_{i+1}")
+                for i in range(6):
+                    state_names.append(f"right_effector_{i+1}")
+            elif effector_dim > 0 and effector_dim % 2 == 0:
+                # Even number: split into left/right
+                half = effector_dim // 2
+                for i in range(half):
+                    state_names.append(f"left_effector_{i+1}")
+                for i in range(half):
+                    state_names.append(f"right_effector_{i+1}")
+            else:
+                # Odd or zero: use generic names
+                for i in range(effector_dim):
+                    state_names.append(f"effector_{i+1}")
             
-            # Waist state names (1-indexed)
+            # Waist state names - use generic names (no left/right distinction)
             for i in range(waist_dim):
                 state_names.append(f"waist_{i+1}")
         else:
@@ -1907,27 +1946,66 @@ class LeRobotDatasetWriter:
             waist_dim = self.action_dim_info.get('waist_dim', 0)
             robot_velocity_dim = self.action_dim_info.get('robot_velocity_dim', 0)
             
-            # Joint action names (1-indexed)
-            for i in range(joint_dim):
-                action_names.append(f"joint_{i+1}")
+            # Joint action names - distinguish left/right arms
+            # Assume joints are ordered: left arm first, then right arm
+            if joint_dim == 14:
+                # Dual-arm robot: 7 joints per arm
+                for i in range(7):
+                    action_names.append(f"left_arm_joint_{i+1}")
+                for i in range(7):
+                    action_names.append(f"right_arm_joint_{i+1}")
+            elif joint_dim % 2 == 0:
+                # Even number of joints: split into left/right
+                half = joint_dim // 2
+                for i in range(half):
+                    action_names.append(f"left_arm_joint_{i+1}")
+                for i in range(half):
+                    action_names.append(f"right_arm_joint_{i+1}")
+            else:
+                # Odd number or unknown: use generic names
+                for i in range(joint_dim):
+                    action_names.append(f"joint_{i+1}")
             
-            # End effector action names (1-indexed)
-            for i in range(end_dim):
-                action_names.append(f"end_effector_{i+1}")
+            # End effector action names - distinguish left/right
+            # end_dim is typically 6 (2 end effectors × 3 coordinates each)
+            if end_dim == 6:
+                # Left end effector (x, y, z)
+                action_names.extend(["left_end_effector_x", "left_end_effector_y", "left_end_effector_z"])
+                # Right end effector (x, y, z)
+                action_names.extend(["right_end_effector_x", "right_end_effector_y", "right_end_effector_z"])
+            else:
+                # Generic names if dimension doesn't match expected
+                for i in range(end_dim):
+                    action_names.append(f"end_effector_{i+1}")
             
-            # Head action names (1-indexed)
+            # Head action names - use generic names (no left/right distinction)
             for i in range(head_dim):
                 action_names.append(f"head_{i+1}")
             
-            # Effector action names (1-indexed)
-            for i in range(effector_dim):
-                action_names.append(f"effector_{i+1}")
+            # Effector action names - distinguish left/right if even number
+            if effector_dim == 12:
+                # 12 dimensions: 6 per effector
+                for i in range(6):
+                    action_names.append(f"left_effector_{i+1}")
+                for i in range(6):
+                    action_names.append(f"right_effector_{i+1}")
+            elif effector_dim > 0 and effector_dim % 2 == 0:
+                # Even number: split into left/right
+                half = effector_dim // 2
+                for i in range(half):
+                    action_names.append(f"left_effector_{i+1}")
+                for i in range(half):
+                    action_names.append(f"right_effector_{i+1}")
+            else:
+                # Odd or zero: use generic names
+                for i in range(effector_dim):
+                    action_names.append(f"effector_{i+1}")
             
-            # Waist action names (1-indexed)
+            # Waist action names - use generic names (no left/right distinction)
             for i in range(waist_dim):
                 action_names.append(f"waist_{i+1}")
             
-            # Robot velocity action names (1-indexed)
+            # Robot velocity action names - use generic names (no left/right distinction)
             for i in range(robot_velocity_dim):
                 action_names.append(f"robot_velocity_{i+1}")
         else:
@@ -2280,39 +2358,41 @@ class TaskProcessor:
             'failed': 0
         }
         
-        def process_single_episode(episode_id: int, episode_index: int) -> tuple:
+        def process_single_episode(episode_id: int, episode_index: Optional[int]) -> tuple:
             """
             Process a single episode.
             
+            Args:
+                episode_id: Original episode ID from source data
+                episode_index: Episode index for output (None if not yet assigned)
+            
             Returns:
-                tuple: (status, episode_id, error_message)
+                tuple: (status, episode_id, error_message, episode_data)
                 status: 'processed', 'skipped', or 'failed'
+                episode_data: EpisodeData object if processed, None otherwise
             """
             try:
                 # Acquire episode lock to prevent concurrent processing
                 with self._lock_mutex:
                     if episode_id in self._episode_locks:
                         self.logger.debug(f"Episode {episode_id} is locked by another worker")
-                        return ('skipped', episode_id, None)
+                        return ('skipped', episode_id, None, None)
                     self._episode_locks[episode_id] = True
                 
                 try:
-                    # Check if episode already exists
-                    if self._check_episode_exists(writer, episode_index):
+                    # Check if episode already exists (only if episode_index is provided)
+                    if episode_index is not None and self._check_episode_exists(writer, episode_index):
                         self.logger.info(f"Episode {episode_id} already exists, skipping")
-                        return ('skipped', episode_id, None)
+                        return ('skipped', episode_id, None, None)
                     
                     # Convert episode
-                    self.logger.info(f"Processing episode {episode_id} (index {episode_index})")
+                    self.logger.info(f"Processing episode {episode_id}")
                     episode_data = self.episode_converter.convert_episode(
                         task_id, episode_id, task_name
                     )
                     
-                    # Write episode
-                    writer.write_episode(episode_data, episode_index)
-                    
-                    self.logger.info(f"✓ Episode {episode_id} processed successfully")
-                    return ('processed', episode_id, None)
+                    self.logger.info(f"✓ Episode {episode_id} converted successfully")
+                    return ('processed', episode_id, None, episode_data)
                 
                 finally:
                     # Release episode lock
@@ -2327,7 +2407,6 @@ class TaskProcessor:
                 error_context = {
                     "task_id": task_id,
                     "episode_id": episode_id,
-                    "episode_index": episode_index,
                     "error_type": getattr(e, 'error_type', 'unknown'),
                     "error_message": str(e)
                 }
@@ -2345,43 +2424,71 @@ class TaskProcessor:
                     exc_info=True
                 )
                 
+                return ('failed', episode_id, error_msg, None)
+        
+        # Process episodes in parallel
+        # Strategy: First convert all episodes, then write only successful ones with sequential indices
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all episodes for conversion (without episode_index yet)
+            futures = {}
+            for episode_id in episode_ids:
+                future = executor.submit(process_single_episode, episode_id, None)
+                futures[future] = episode_id
+            
+            # Collect conversion results and track successful episodes
+            successful_episodes = []  # List of (episode_id, episode_data) tuples
+            
+            for future in as_completed(futures):
+                episode_id = futures[future]
+                try:
+                    status, ep_id, error_msg, episode_data = future.result()
+                    
+                    if status == 'processed' and episode_data is not None:
+                        # Episode was successfully converted, add to successful list
+                        successful_episodes.append((ep_id, episode_data))
+                    elif status == 'skipped':
+                        results['skipped'] += 1
+                    elif status == 'failed':
+                        results['failed'] += 1
+                        if error_msg:
+                            self.logger.error(f"Episode {episode_id} failed: {error_msg}")
+                            
+                            # Record failed episode in writer
+                            writer.failed_episodes.append({
+                                "episode_id": episode_id,
+                                "task_id": task_id,
+                                "error_message": error_msg
+                            })
+                
+                except Exception as e:
+                    self.logger.error(f"Unexpected error processing episode {episode_id}: {e}")
+                    results['failed'] += 1
+        
+        # Now write successful episodes with sequential indices (no gaps)
+        for episode_index, (episode_id, episode_data) in enumerate(successful_episodes):
+            try:
+                self.logger.info(f"Writing episode {episode_id} with index {episode_index}")
+                writer.write_episode(episode_data, episode_index)
+                results['processed'] += 1
+                self.logger.info(f"✓ Episode {episode_id} written successfully at index {episode_index}")
+            except Exception as e:
+                error_msg = f"Failed to write episode {episode_id}: {e}"
+                self.logger.error(error_msg, exc_info=True)
+                results['failed'] += 1
+                results['processed'] -= 1  # Decrement since we counted it as processed earlier
+                
+                # Record failed episode in writer
+                writer.failed_episodes.append({
+                    "episode_id": episode_id,
+                    "task_id": task_id,
+                    "error_message": error_msg
+                })
+                
                 # Clean up partial data for this episode
                 try:
                     self._cleanup_partial_episode(writer, episode_index, episode_id)
                 except Exception as cleanup_error:
                     self.logger.error(f"Failed to cleanup partial data for episode {episode_id}: {cleanup_error}")
-                
-                return ('failed', episode_id, error_msg)
-        
-        # Process episodes in parallel
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all episodes (episode_index starts from 0)
-            futures = {}
-            for i, episode_id in enumerate(episode_ids):
-                episode_index = i  # 0-based index within this task
-                future = executor.submit(process_single_episode, episode_id, episode_index)
-                futures[future] = episode_id
-            
-            # Collect results as they complete
-            for future in as_completed(futures):
-                episode_id = futures[future]
-                try:
-                    status, _, error_msg = future.result()
-                    results[status] += 1
-                    
-                    if status == 'failed' and error_msg:
-                        self.logger.error(f"Episode {episode_id} failed: {error_msg}")
-                        
-                        # Record failed episode in writer
-                        writer.failed_episodes.append({
-                            "episode_id": episode_id,
-                            "task_id": task_id,
-                            "error_message": error_msg
-                        })
-                
-                except Exception as e:
-                    self.logger.error(f"Unexpected error processing episode {episode_id}: {e}")
-                    results['failed'] += 1
         
         return results
     
