@@ -2489,6 +2489,15 @@ class TaskProcessor:
                     self._cleanup_partial_episode(writer, episode_index, episode_id)
                 except Exception as cleanup_error:
                     self.logger.error(f"Failed to cleanup partial data for episode {episode_id}: {cleanup_error}")
+            finally:
+                # IMPORTANT: Close video readers to free file handles
+                try:
+                    for camera_name, video_reader in episode_data.videos.items():
+                        if hasattr(video_reader, 'close'):
+                            video_reader.close()
+                            self.logger.debug(f"Closed video reader for {camera_name} in episode {episode_id}")
+                except Exception as e:
+                    self.logger.warning(f"Error closing video readers for episode {episode_id}: {e}")
         
         return results
     
