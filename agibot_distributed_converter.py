@@ -2427,7 +2427,7 @@ class TaskProcessor:
                 return ('failed', episode_id, error_msg, None)
         
         # Process episodes in parallel
-        # Strategy: First convert all episodes, then write only successful ones with sequential indices
+        # Strategy: Convert and write episodes in streaming fashion to avoid accumulating open files
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Submit all episodes for conversion (without episode_index yet)
             futures = {}
@@ -2435,18 +2435,16 @@ class TaskProcessor:
                 future = executor.submit(process_single_episode, episode_id, None)
                 futures[future] = episode_id
             
-            # Collect conversion results and track successful episodes
-            successful_episodes = []  # List of (episode_id, episode_data) tuples
+            # Collect conversion results and write immediately in order
+            conversion_results = []  # List of (episode_id, status, error_msg, episode_data)
             
             for future in as_completed(futures):
                 episode_id = futures[future]
                 try:
                     status, ep_id, error_msg, episode_data = future.result()
+                    conversion_results.append((ep_id, status, error_msg, episode_data))
                     
-                    if status == 'processed' and episode_data is not None:
-                        # Episode was successfully converted, add to successful list
-                        successful_episodes.append((ep_id, episode_data))
-                    elif status == 'skipped':
+                    if status == 'skipped':
                         results['skipped'] += 1
                     elif status == 'failed':
                         results['failed'] += 1
@@ -2464,7 +2462,13 @@ class TaskProcessor:
                     self.logger.error(f"Unexpected error processing episode {episode_id}: {e}")
                     results['failed'] += 1
         
+        # Sort by episode_id to maintain order, then filter successful ones
+        conversion_results.sort(key=lambda x: x[0])
+        successful_episodes = [(ep_id, ep_data) for ep_id, status, _, ep_data in conversion_results 
+                               if status == 'processed' and ep_data is not None]
+        
         # Now write successful episodes with sequential indices (no gaps)
+        # Write immediately and close resources to avoid accumulating open files
         for episode_index, (episode_id, episode_data) in enumerate(successful_episodes):
             try:
                 self.logger.info(f"Writing episode {episode_id} with index {episode_index}")
@@ -2475,7 +2479,6 @@ class TaskProcessor:
                 error_msg = f"Failed to write episode {episode_id}: {e}"
                 self.logger.error(error_msg, exc_info=True)
                 results['failed'] += 1
-                results['processed'] -= 1  # Decrement since we counted it as processed earlier
                 
                 # Record failed episode in writer
                 writer.failed_episodes.append({
@@ -2490,7 +2493,7 @@ class TaskProcessor:
                 except Exception as cleanup_error:
                     self.logger.error(f"Failed to cleanup partial data for episode {episode_id}: {cleanup_error}")
             finally:
-                # IMPORTANT: Close video readers to free file handles
+                # IMPORTANT: Close video readers immediately after writing to free file handles
                 try:
                     for camera_name, video_reader in episode_data.videos.items():
                         if hasattr(video_reader, 'close'):
