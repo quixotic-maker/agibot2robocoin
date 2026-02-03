@@ -405,7 +405,7 @@ class AgibotDataReader:
         
         return task_ids
     
-    @retry_with_backoff(max_retries=2, initial_delay=0.5, exceptions=(OSError, IOError))
+    @retry_with_backoff(max_retries=1, initial_delay=0.2, exceptions=(OSError, IOError))
     def get_task_info(self, task_id: int) -> Dict:
         """
         Parse task info JSON file for a given task ID.
@@ -505,7 +505,7 @@ class AgibotDataReader:
         )
         return proprio_path
     
-    @retry_with_backoff(max_retries=2, initial_delay=0.5, exceptions=(OSError, IOError))
+    @retry_with_backoff(max_retries=1, initial_delay=0.2, exceptions=(OSError, IOError))
     def read_proprio_stats(self, task_id: int, episode_id: int) -> Dict[str, np.ndarray]:
         """
         Read proprio_stats H5 file and extract state, action, and timestamp data.
@@ -1647,7 +1647,7 @@ class LeRobotDatasetWriter:
         
         self.logger.info(f"✓ Episode {episode_index} written successfully")
     
-    @retry_with_backoff(max_retries=2, initial_delay=0.5, exceptions=(OSError, IOError))
+    @retry_with_backoff(max_retries=1, initial_delay=0.2, exceptions=(OSError, IOError))
     def _write_parquet(
         self,
         episode_data: EpisodeData,
@@ -1712,13 +1712,14 @@ class LeRobotDatasetWriter:
         table = pa.Table.from_pandas(df)
         
         if use_buffering:
-            # Use buffered writing with compression
+            # Use buffered writing with fast compression
+            # PERFORMANCE: Use lz4 instead of snappy for faster compression
             pq.write_table(
                 table,
                 parquet_file,
-                compression='snappy',  # Fast compression
+                compression='lz4',     # Faster than snappy, slightly larger files
                 use_dictionary=True,   # Enable dictionary encoding
-                write_statistics=True  # Write column statistics
+                write_statistics=False # Skip statistics for speed
             )
         else:
             # Simple write without buffering
@@ -1734,16 +1735,22 @@ class LeRobotDatasetWriter:
         episode_data: EpisodeData,
         episode_index: int,
         chunk_name: str,
-        batch_size: int = 30
+        batch_size: int = 100
     ) -> None:
         """
         Encode and write video files for all cameras with batched frame encoding.
+        
+        PERFORMANCE OPTIMIZATIONS:
+        - Increased batch_size from 30 to 100 for faster encoding
+        - Uses libx264 with ultrafast preset for maximum speed
+        - Limits frame reading to episode_data.num_frames to avoid processing extra frames
+        - Skips unnecessary format conversions when possible
         
         Args:
             episode_data: Episode data containing video readers
             episode_index: Global episode index
             chunk_name: Chunk name (e.g., "chunk-000")
-            batch_size: Number of frames to batch for encoding (default: 30)
+            batch_size: Number of frames to batch for encoding (default: 100, increased from 30)
         """
         try:
             import av
@@ -1752,6 +1759,9 @@ class LeRobotDatasetWriter:
                 "PyAV is required for video encoding. "
                 "Please install it: pip install av"
             )
+        
+        # Get the exact number of frames needed for this episode
+        num_frames_needed = episode_data.num_frames
         
         for camera_name, video_reader in episode_data.videos.items():
             # Create camera-specific directory
@@ -1769,11 +1779,18 @@ class LeRobotDatasetWriter:
                 # Create output container
                 output_container = av.open(str(output_video), mode='w')
                 
-                # Create video stream
-                stream = output_container.add_stream('h264', rate=self.fps)
+                # Create video stream with optimized encoding settings
+                stream = output_container.add_stream('libx264', rate=self.fps)
                 stream.width = source_stream.width
                 stream.height = source_stream.height
                 stream.pix_fmt = 'yuv420p'
+                
+                # PERFORMANCE: Use ultrafast preset for maximum encoding speed
+                stream.options = {
+                    'preset': 'ultrafast',  # Fastest encoding (trades file size for speed)
+                    'crf': '23',            # Constant quality (23 is default, 18-28 range)
+                    'tune': 'fastdecode'    # Optimize for fast decoding
+                }
                 
                 # Read and encode frames sequentially
                 frame_count = 0
@@ -1781,10 +1798,17 @@ class LeRobotDatasetWriter:
                 
                 for packet in source_container.demux(source_stream):
                     for frame in packet.decode():
-                        # Convert frame to numpy array and back to VideoFrame
-                        # This ensures consistent format
-                        frame_array = frame.to_ndarray(format='rgb24')
-                        video_frame = av.VideoFrame.from_ndarray(frame_array, format='rgb24')
+                        # PERFORMANCE: Stop reading once we have enough frames
+                        if frame_count >= num_frames_needed:
+                            break
+                        
+                        # PERFORMANCE: Skip unnecessary format conversion if already yuv420p
+                        if frame.format.name == 'yuv420p':
+                            video_frame = frame
+                        else:
+                            # Only convert if necessary
+                            video_frame = frame.reformat(format='yuv420p')
+                        
                         frame_batch.append(video_frame)
                         frame_count += 1
                         
@@ -1794,6 +1818,10 @@ class LeRobotDatasetWriter:
                                 for pkt in stream.encode(batch_frame):
                                     output_container.mux(pkt)
                             frame_batch.clear()
+                    
+                    # PERFORMANCE: Break outer loop if we have enough frames
+                    if frame_count >= num_frames_needed:
+                        break
                 
                 # Encode remaining frames in batch
                 if frame_batch:
@@ -1812,7 +1840,7 @@ class LeRobotDatasetWriter:
                 
                 self.logger.debug(
                     f"Encoded video: {camera_name} -> {output_video.name} "
-                    f"({frame_count} frames, batch_size={batch_size})"
+                    f"({frame_count}/{num_frames_needed} frames, batch_size={batch_size}, preset=ultrafast)"
                 )
             
             except Exception as e:
@@ -2868,8 +2896,8 @@ Examples:
     parser.add_argument(
         '--max-workers',
         type=int,
-        default=4,
-        help='Number of parallel workers for episode processing (default: 4)'
+        default=None,
+        help='Number of parallel workers for episode processing (default: auto-detect based on CPU cores, capped at 16)'
     )
     
     parser.add_argument(
@@ -2955,8 +2983,8 @@ def validate_arguments(args: argparse.Namespace, logger: logging.Logger) -> None
     except Exception as e:
         raise ConfigurationError(f"Cannot create output directory {args.output_path}: {e}")
     
-    # Validate max_workers
-    if args.max_workers < 1:
+    # Validate max_workers (if provided)
+    if args.max_workers is not None and args.max_workers < 1:
         raise ConfigurationError(f"max_workers must be >= 1, got {args.max_workers}")
     
     # Validate max_tasks if provided
@@ -2995,7 +3023,7 @@ class DistributedConverter:
         dataset_path: Path,
         output_path: Path,
         repo_id: str,
-        max_workers: int = 4,
+        max_workers: Optional[int] = None,
         test_mode: bool = False,
         max_tasks: Optional[int] = None,
         max_episodes: Optional[int] = None,
@@ -3011,6 +3039,7 @@ class DistributedConverter:
             output_path: Path to output LeRobot dataset
             repo_id: LeRobot repository identifier
             max_workers: Number of parallel workers for episode processing
+                        (None = auto-detect based on CPU cores, capped at 16)
             test_mode: Enable test mode for limited processing
             max_tasks: Maximum number of tasks to process (None for all)
             max_episodes: Maximum number of episodes per task (None for all)
@@ -3021,7 +3050,16 @@ class DistributedConverter:
         self.dataset_path = dataset_path
         self.output_path = output_path
         self.repo_id = repo_id
-        self.max_workers = max_workers
+        
+        # PERFORMANCE: Auto-detect optimal worker count based on CPU cores
+        if max_workers is None:
+            import multiprocessing
+            cpu_count = multiprocessing.cpu_count()
+            # Use 75% of CPU cores, capped at 16 to avoid too many open files
+            self.max_workers = min(max(int(cpu_count * 0.75), 1), 16)
+        else:
+            self.max_workers = max_workers
+        
         self.test_mode = test_mode
         self.max_tasks = max_tasks
         self.max_episodes = max_episodes
@@ -3037,6 +3075,9 @@ class DistributedConverter:
             self.logger = setup_logging(log_dir, self.node_id, log_level)
         else:
             self.logger = logger
+        
+        # Log the worker count
+        self.logger.info(f"Using {self.max_workers} parallel workers for episode processing")
         
         # Initialize memory monitor
         self.memory_monitor = MemoryMonitor(
