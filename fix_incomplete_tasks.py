@@ -9,6 +9,7 @@
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
@@ -619,6 +620,16 @@ def main():
   
   # 清理特定类别的tasks
   python fix_incomplete_tasks.py --output-path output --clean --category all_missing
+  
+  # 清理指定的tasks（按task ID）
+  python fix_incomplete_tasks.py --output-path output --clean --tasks 355,356,357
+  
+  # 清理指定tasks并自动重新运行转换器
+  python fix_incomplete_tasks.py \\
+    --output-path output \\
+    --dataset-path data/agibot \\
+    --repo-id agibot/dataset \\
+    --clean --tasks 355,356 --retry
         """
     )
     
@@ -660,6 +671,24 @@ def main():
                  'meta_and_videos', 'meta_and_parquet', 'videos_and_parquet', 'all_missing', 'all'],
         default='all',
         help='要处理的类别（默认: all）'
+    )
+    
+    parser.add_argument(
+        '--tasks',
+        type=str,
+        help='指定要处理的task IDs，用逗号分隔（例如: 355,356,357）'
+    )
+    
+    parser.add_argument(
+        '--retry',
+        action='store_true',
+        help='清理后自动重新运行转换器'
+    )
+    
+    parser.add_argument(
+        '--repo-id',
+        type=str,
+        help='Repository ID（用于重新运行）'
     )
     
     args = parser.parse_args()
@@ -713,7 +742,17 @@ def main():
     
     elif args.clean:
         # 清理tasks
-        if args.category == 'all':
+        if args.tasks:
+            # 指定task IDs
+            specified_ids = [int(tid.strip()) for tid in args.tasks.split(',')]
+            tasks_to_clean = [task for task in incomplete_tasks if task.task_id in specified_ids]
+            
+            if not tasks_to_clean:
+                print(f"没有找到指定的tasks: {args.tasks}")
+                return
+            
+            print(f"将清理指定的 {len(tasks_to_clean)} 个tasks: {', '.join(str(t.task_id) for t in tasks_to_clean)}")
+        elif args.category == 'all':
             tasks_to_clean = incomplete_tasks
         else:
             tasks_to_clean = categories[args.category]
@@ -723,6 +762,42 @@ def main():
             return
         
         clean_tasks(tasks_to_clean, args.output_path, dry_run=args.dry_run)
+        
+        # 如果指定了retry，自动重新运行转换器
+        if args.retry and not args.dry_run:
+            if not args.dataset_path or not args.repo_id:
+                print()
+                print("❌ 要重新运行转换器，需要提供 --dataset-path 和 --repo-id")
+                sys.exit(1)
+            
+            print()
+            print("=" * 80)
+            print("重新运行转换器")
+            print("=" * 80)
+            print()
+            
+            # 构建命令
+            cmd = [
+                'python',
+                'agibot_distributed_converter.py',
+                '--dataset-path', str(args.dataset_path),
+                '--output-path', str(args.output_path),
+                '--repo-id', args.repo_id
+            ]
+            
+            print("执行命令:")
+            print(' '.join(cmd))
+            print()
+            
+            # 运行转换器
+            try:
+                subprocess.run(cmd, check=True)
+                print()
+                print("✅ 转换完成")
+            except subprocess.CalledProcessError as e:
+                print()
+                print(f"❌ 转换失败: {e}")
+                sys.exit(1)
     
     print()
 
