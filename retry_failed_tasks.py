@@ -41,7 +41,11 @@ def check_task_completeness(task_dir: Path) -> Tuple[bool, str]:
     if not data_dir.exists():
         return False, "缺少 data 目录"
     
-    parquet_files = list(data_dir.rglob("*.parquet"))
+    # data目录结构: data/chunk-000/episode_000000.parquet
+    parquet_files = list(data_dir.rglob("chunk-*/episode_*.parquet"))
+    if not parquet_files:
+        # 尝试更宽松的搜索
+        parquet_files = list(data_dir.rglob("*.parquet"))
     if not parquet_files:
         return False, "没有 parquet 文件"
     
@@ -50,7 +54,11 @@ def check_task_completeness(task_dir: Path) -> Tuple[bool, str]:
     if not videos_dir.exists():
         return False, "缺少 videos 目录"
     
-    video_files = list(videos_dir.rglob("*.mp4"))
+    # videos目录结构: videos/chunk-000/observation.images.camera1/episode_000000.mp4
+    video_files = list(videos_dir.rglob("chunk-*/observation.images.*/episode_*.mp4"))
+    if not video_files:
+        # 尝试更宽松的搜索
+        video_files = list(videos_dir.rglob("*.mp4"))
     if not video_files:
         return False, "没有视频文件"
     
