@@ -199,15 +199,51 @@ class DataFixer:
         majority_count = issue["majority_count"]
         inconsistent = issue["inconsistent_episodes"]
         camera_counts = issue["camera_counts"]
+        episode_cameras = issue["episode_cameras"]
         
         print(f"      相机数量分布: {camera_counts}")
         print(f"      主流相机数量: {majority_count}")
+        
+        # 找出主流的相机列表（从相机数量等于 majority_count 的 episode 中获取）
+        majority_cameras = None
+        for ep_id, cameras in episode_cameras.items():
+            if len(cameras) == majority_count:
+                majority_cameras = sorted(cameras)
+                break
+        
+        if majority_cameras:
+            print(f"      主流相机列表:")
+            for i, cam in enumerate(majority_cameras, 1):
+                print(f"        {i}. {cam}")
+        
         print(f"      不一致的 episodes: {len(inconsistent)} 个")
         
-        if len(inconsistent) <= 5:
-            print(f"        {inconsistent}")
+        # 显示每个有问题的 episode 的详细信息
+        if len(inconsistent) <= 10:
+            for ep_id in inconsistent:
+                cameras = sorted(episode_cameras[ep_id])
+                missing = set(majority_cameras) - set(cameras) if majority_cameras else set()
+                extra = set(cameras) - set(majority_cameras) if majority_cameras else set()
+                
+                print(f"        Episode {ep_id}: {len(cameras)} 个相机")
+                if missing:
+                    print(f"          缺少: {sorted(missing)}")
+                if extra:
+                    print(f"          多余: {sorted(extra)}")
+                if not missing and not extra:
+                    print(f"          相机: {cameras}")
         else:
-            print(f"        {inconsistent[:5]} ... (共 {len(inconsistent)} 个)")
+            # 只显示前5个
+            for ep_id in inconsistent[:5]:
+                cameras = sorted(episode_cameras[ep_id])
+                missing = set(majority_cameras) - set(cameras) if majority_cameras else set()
+                
+                print(f"        Episode {ep_id}: {len(cameras)} 个相机", end="")
+                if missing:
+                    print(f", 缺少: {sorted(missing)}")
+                else:
+                    print()
+            print(f"        ... 还有 {len(inconsistent) - 5} 个 episodes")
         
         # 删除相机数量不一致的 episodes
         print(f"      {'[DRY RUN] 将' if self.dry_run else ''}删除这些 episodes...")
