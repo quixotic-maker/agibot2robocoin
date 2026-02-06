@@ -104,6 +104,9 @@ class DataFixer:
         if camera_issue:
             if self._fix_camera_issue(task_id, task_dir, camera_issue):
                 fixed = True
+                # 删除 episode 后，需要重新检查连续性
+                # 因为删除操作会改变 episode 列表
+                continuity_issue = self._check_episode_continuity(task_id, task_dir)
         
         # 修复 episode 连续性问题
         if continuity_issue:
