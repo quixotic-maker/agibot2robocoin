@@ -119,15 +119,35 @@ class DataFixer:
     
     def _check_camera_consistency(self, task_id: int, task_dir: Path) -> Dict:
         """检查相机数量一致性"""
-        videos_dir = task_dir / "videos"
+        # 1. 从 meta/info.json 读取应该有的相机列表
+        meta_info_file = task_dir / "meta" / "info.json"
+        expected_cameras = None
         
-        # 统计每个 episode 的相机数量
+        if meta_info_file.exists():
+            try:
+                with open(meta_info_file, 'r') as f:
+                    info = json.load(f)
+                    features = info.get('features', {})
+                    
+                    # 提取所有 observation.images.* 的相机名称
+                    expected_cameras = set()
+                    for feature_name in features.keys():
+                        if feature_name.startswith('observation.images.'):
+                            expected_cameras.add(feature_name)
+                    
+                    if not expected_cameras:
+                        print(f"      ⚠️  meta/info.json 中没有找到相机特征")
+            except Exception as e:
+                print(f"      ⚠️  读取 meta/info.json 失败: {e}")
+        
+        # 2. 统计每个 episode 实际有的相机
+        videos_dir = task_dir / "videos"
         episode_cameras = defaultdict(set)
         
         for video_file in videos_dir.rglob("episode_*.mp4"):
             try:
                 episode_id = int(video_file.stem.replace("episode_", ""))
-                camera_name = video_file.parent.name
+                camera_name = video_file.parent.name  # observation.images.camera1
                 episode_cameras[episode_id].add(camera_name)
             except (ValueError, IndexError):
                 continue
@@ -135,17 +155,35 @@ class DataFixer:
         if not episode_cameras:
             return None
         
-        # 统计相机数量分布
+        # 3. 如果有 expected_cameras，使用它作为标准
+        if expected_cameras:
+            majority_cameras = expected_cameras
+            majority_count = len(expected_cameras)
+        else:
+            # 否则，找出主流的相机数量（出现次数最多的）
+            camera_counts = Counter(len(cameras) for cameras in episode_cameras.values())
+            
+            # 如果只有一种相机数量，没有问题
+            if len(camera_counts) == 1:
+                return None
+            
+            majority_count = camera_counts.most_common(1)[0][0]
+            
+            # 从相机数量等于 majority_count 的 episode 中获取相机列表
+            majority_cameras = None
+            for ep_id, cameras in episode_cameras.items():
+                if len(cameras) == majority_count:
+                    majority_cameras = cameras
+                    break
+        
+        # 4. 统计相机数量分布
         camera_counts = Counter(len(cameras) for cameras in episode_cameras.values())
         
-        # 如果只有一种相机数量，没有问题
-        if len(camera_counts) == 1:
+        # 如果只有一种相机数量，且等于期望数量，没有问题
+        if len(camera_counts) == 1 and list(camera_counts.keys())[0] == majority_count:
             return None
         
-        # 找出主流的相机数量（出现次数最多的）
-        majority_count = camera_counts.most_common(1)[0][0]
-        
-        # 找出相机数量不一致的 episodes
+        # 5. 找出相机数量不一致的 episodes
         inconsistent_episodes = [
             ep_id for ep_id, cameras in episode_cameras.items()
             if len(cameras) != majority_count
@@ -154,8 +192,10 @@ class DataFixer:
         return {
             "camera_counts": dict(camera_counts),
             "majority_count": majority_count,
+            "majority_cameras": sorted(majority_cameras) if majority_cameras else None,
             "inconsistent_episodes": sorted(inconsistent_episodes),
-            "episode_cameras": dict(episode_cameras)
+            "episode_cameras": dict(episode_cameras),
+            "from_info_json": expected_cameras is not None
         }
     
     def _check_episode_continuity(self, task_id: int, task_dir: Path) -> Dict:
@@ -200,19 +240,14 @@ class DataFixer:
         inconsistent = issue["inconsistent_episodes"]
         camera_counts = issue["camera_counts"]
         episode_cameras = issue["episode_cameras"]
+        majority_cameras = issue["majority_cameras"]
+        from_info_json = issue["from_info_json"]
         
         print(f"      相机数量分布: {camera_counts}")
-        print(f"      主流相机数量: {majority_count}")
-        
-        # 找出主流的相机列表（从相机数量等于 majority_count 的 episode 中获取）
-        majority_cameras = None
-        for ep_id, cameras in episode_cameras.items():
-            if len(cameras) == majority_count:
-                majority_cameras = sorted(cameras)
-                break
+        print(f"      标准相机数量: {majority_count} {'(来自 meta/info.json)' if from_info_json else '(来自主流数据)'}")
         
         if majority_cameras:
-            print(f"      主流相机列表:")
+            print(f"      标准相机列表:")
             for i, cam in enumerate(majority_cameras, 1):
                 print(f"        {i}. {cam}")
         
@@ -365,6 +400,23 @@ class DataFixer:
         return True
     
     def _update_meta_info(self, task_id: int, task_dir: Path):
+        """更新所有 meta 文件"""
+        meta_dir = task_dir / "meta"
+        
+        if not meta_dir.exists():
+            return
+        
+        # 1. 更新 meta/info.json
+        self._update_info_json(task_id, task_dir)
+        
+        # 2. 更新 meta/episodes.jsonl
+        self._update_episodes_jsonl(task_id, task_dir)
+        
+        # 3. meta/tasks.jsonl 通常不需要更新（只有一个 task）
+        # 但我们可以验证一下
+        self._verify_tasks_jsonl(task_id, task_dir)
+    
+    def _update_info_json(self, task_id: int, task_dir: Path):
         """更新 meta/info.json"""
         meta_info_file = task_dir / "meta" / "info.json"
         
@@ -376,21 +428,101 @@ class DataFixer:
             with open(meta_info_file, 'r') as f:
                 info = json.load(f)
             
-            # 重新统计 episodes
+            # 重新统计 episodes 和 frames
             data_dir = task_dir / "data"
-            episode_count = len(list(data_dir.rglob("episode_*.parquet")))
+            parquet_files = list(data_dir.rglob("episode_*.parquet"))
+            episode_count = len(parquet_files)
+            
+            # 统计总帧数（从 parquet 文件）
+            total_frames = 0
+            try:
+                import pyarrow.parquet as pq
+                for parquet_file in parquet_files:
+                    table = pq.read_table(parquet_file)
+                    total_frames += len(table)
+            except Exception as e:
+                print(f"      ⚠️  无法统计总帧数: {e}")
+                # 如果无法读取，保持原值
+                total_frames = info.get("total_frames", 0)
             
             # 更新
             info["total_episodes"] = episode_count
+            if total_frames > 0:
+                info["total_frames"] = total_frames
             
             # 写回
             with open(meta_info_file, 'w') as f:
                 json.dump(info, f, indent=2)
             
-            print(f"      ✓ 已更新 meta/info.json: total_episodes={episode_count}")
+            print(f"      ✓ 已更新 meta/info.json: total_episodes={episode_count}, total_frames={total_frames}")
         
         except Exception as e:
             print(f"      ⚠️  更新 meta/info.json 失败: {e}")
+    
+    def _update_episodes_jsonl(self, task_id: int, task_dir: Path):
+        """更新 meta/episodes.jsonl"""
+        episodes_file = task_dir / "meta" / "episodes.jsonl"
+        
+        if not episodes_file.exists():
+            return
+        
+        try:
+            # 读取所有 episode 信息
+            episodes = []
+            with open(episodes_file, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        episodes.append(json.loads(line))
+            
+            # 按 episode_index 排序
+            episodes.sort(key=lambda x: x.get('episode_index', 0))
+            
+            # 获取实际存在的 episode 索引
+            data_dir = task_dir / "data"
+            existing_indices = set()
+            for parquet_file in data_dir.rglob("episode_*.parquet"):
+                try:
+                    episode_index = int(parquet_file.stem.replace("episode_", ""))
+                    existing_indices.add(episode_index)
+                except ValueError:
+                    continue
+            
+            # 过滤出存在的 episodes
+            valid_episodes = [ep for ep in episodes if ep.get('episode_index') in existing_indices]
+            
+            # 重新编号（如果需要）
+            renumbered_episodes = []
+            for new_index, episode in enumerate(valid_episodes):
+                episode['episode_index'] = new_index
+                renumbered_episodes.append(episode)
+            
+            # 写回
+            with open(episodes_file, 'w') as f:
+                for episode in renumbered_episodes:
+                    f.write(json.dumps(episode) + '\n')
+            
+            print(f"      ✓ 已更新 meta/episodes.jsonl: {len(renumbered_episodes)} episodes")
+        
+        except Exception as e:
+            print(f"      ⚠️  更新 meta/episodes.jsonl 失败: {e}")
+    
+    def _verify_tasks_jsonl(self, task_id: int, task_dir: Path):
+        """验证 meta/tasks.jsonl"""
+        tasks_file = task_dir / "meta" / "tasks.jsonl"
+        
+        if not tasks_file.exists():
+            return
+        
+        try:
+            # 读取 tasks 信息
+            with open(tasks_file, 'r') as f:
+                line = f.readline()
+                if line.strip():
+                    task_info = json.loads(line)
+                    print(f"      ✓ meta/tasks.jsonl 存在: task_index={task_info.get('task_index', 0)}")
+        
+        except Exception as e:
+            print(f"      ⚠️  验证 meta/tasks.jsonl 失败: {e}")
 
 
 def main():
